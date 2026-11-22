@@ -2186,6 +2186,16 @@ def exam_defaults(level):
     return num, mins
 
 
+# Sets shown in the Practice-exam "Set" dropdown. Every other set stays in
+# the bank (still reachable via "All sets" and kept in the UC table), but is
+# hidden from the dropdown to keep it clean.
+FEATURED_SETS = {
+    "Expected Exam Bank — Complex Scenarios (45)",
+    "Official Practice Exam (Databricks Academy PDF)",
+    "DataBricks-Practice-exam(1).pdf",
+}
+
+
 @app.callback(
     Output("exam-domain", "options"),
     Output("exam-domain", "value"),
@@ -2203,7 +2213,9 @@ def exam_filter_options(level, domain, difficulty, qset):
     doms = ["All domains"] + SECTIONS.get(level or "associate", [])
     domain = domain if domain in doms else "All domains"
     sets = ["All sets"] + sorted(
-        {q["source"] for q in get_bank()["questions"] if q["source"]}
+        s
+        for s in {q["source"] for q in get_bank()["questions"] if q["source"]}
+        if s in FEATURED_SETS
     )
     qset = qset if qset in sets else "All sets"
     pool = [q for q in get_bank()["questions"] if q["cert_level"] == level]
