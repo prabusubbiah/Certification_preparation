@@ -1,0 +1,2621 @@
+"""Databricks Cert Prep — trainer for the Databricks Data Engineer
+Associate and Data Engineer Professional certifications.
+
+Three areas:
+  1. Learn         — flashcards by certification and exam domain
+  2. Practice Exams — timed mock exams with scoring and answer review
+  3. Tips & Tricks  — exam strategy and common pitfalls
+
+The question bank (workspace.cert_prep.questions / .flashcards) and every
+exam attempt (workspace.cert_prep.attempts) live in Unity Catalog, so the
+bank keeps growing and results can be analyzed over time.
+"""
+
+import json
+import logging
+import os
+import random
+import time
+import uuid
+from datetime import datetime, timezone
+
+from dash import ALL, Dash, Input, Output, State, callback_context as ctx
+from dash import dcc, html, no_update
+from flask import request as flask_request
+
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("cert-prep")
+
+# ----------------------------------------------------------------- config
+CATALOG, SCHEMA = "workspace", "cert_prep"
+QUESTIONS_TABLE = f"{CATALOG}.{SCHEMA}.questions"
+FLASHCARDS_TABLE = f"{CATALOG}.{SCHEMA}.flashcards"
+ATTEMPTS_TABLE = f"{CATALOG}.{SCHEMA}.attempts"
+
+LEVELS = [
+    {"label": "Data Engineer Associate", "value": "associate"},
+    {"label": "Data Engineer Professional", "value": "professional"},
+]
+PASS_PCT = 70.0
+EXAM_DEFAULTS = {"associate": (20, 60), "professional": (24, 90)}
+
+# ------------------------------------------------------------------ spark
+_spark = None
+
+
+def get_spark():
+    """Serverless Spark session via Databricks Connect (app credentials)."""
+    global _spark
+    if _spark is None:
+        from databricks.connect import DatabricksSession
+        from databricks.sdk import WorkspaceClient
+
+        try:
+            # Apps preconfigures host + client credentials in the environment;
+            # databricks-connect requires serverless to be enabled explicitly.
+            _spark = DatabricksSession.builder.serverless(True).getOrCreate()
+        except Exception:
+            _spark = (
+                DatabricksSession.builder
+                .serverless(True)
+                .sdkConfig(WorkspaceClient().config)
+                .getOrCreate()
+            )
+    return _spark
+
+
+# ------------------------------------------------------------- question bank
+_BANK = None
+
+
+def get_bank(force=False):
+    """Load questions + flashcards from Unity Catalog (cached in memory)."""
+    global _BANK
+    if _BANK is None or force:
+        try:
+            spark = get_spark()
+            questions = []
+            for r in spark.table(QUESTIONS_TABLE).collect():
+                questions.append(
+                    {
+                        "id": r["id"],
+                        "cert_level": r["cert_level"],
+                        "domain": r["domain"],
+                        "difficulty": r["difficulty"],
+                        "question": r["question"],
+                        "options": json.loads(r["options"]),
+                        "correct_index": r["correct_index"],
+                        "explanation": r["explanation"],
+                        "source": r.asDict().get("source"),
+                    }
+                )
+            flashcards = []
+            for r in spark.table(FLASHCARDS_TABLE).collect():
+                flashcards.append(
+                    {
+                        "id": r["id"],
+                        "cert_level": r["cert_level"],
+                        "domain": r["domain"],
+                        "front": r["front"],
+                        "back": r["back"],
+                    }
+                )
+            _BANK = {"questions": questions, "flashcards": flashcards, "error": None}
+        except Exception as e:  # keep the app usable even if UC is unreachable
+            log.exception("Failed to load question bank")
+            _BANK = {"questions": [], "flashcards": [], "error": str(e)}
+    return _BANK
+
+
+def current_user_email():
+    """Identity of the logged-in user, propagated by the Apps frontend."""
+    try:
+        return (
+            flask_request.headers.get("X-Forwarded-Email")
+            or flask_request.headers.get("X-Forwarded-Preferred-Username")
+            or "unknown"
+        )
+    except RuntimeError:
+        return "unknown"
+
+
+# ------------------------------------------------------------------- styles
+CSS = """
+body { font-family: 'Segoe UI', system-ui, sans-serif; background:#f2f4f7; margin:0; color:#1f2937; }
+.container { max-width: 1020px; margin: 0 auto; padding: 16px; }
+.hdr { background: linear-gradient(120deg,#12161d,#2b3444); color:#fff; padding: 28px 16px; border-bottom: 4px solid #ff3621; }
+.hdr h1 { margin:0; font-size:26px; }
+.hdr p { margin:6px 0 0; color:#c7d0dd; }
+.panel { background:#fff; border-radius:12px; padding:20px; margin-top:18px; box-shadow: 0 1px 4px rgba(16,24,40,.08); }
+.controls { display:flex; gap:16px; flex-wrap:wrap; align-items:flex-end; }
+.controls .field { display:flex; flex-direction:column; gap:4px; min-width:280px; flex:1 1 280px; max-width:460px; }
+label { font-size:12px; font-weight:600; color:#667085; text-transform:uppercase; letter-spacing:.4px; }
+button { cursor:pointer; border:none; border-radius:8px; padding:9px 16px; font-weight:600; font-size:14px; background:#eef1f5; color:#1f2937; }
+button:hover { filter:brightness(.96); }
+.btn-primary { background:#1a73ba; color:#fff; }
+.btn-accent { background:#ff3621; color:#fff; }
+.flashcard { background:linear-gradient(180deg,#ffffff,#f8fafc); border:1px solid #e3e8ef; border-radius:12px; padding:28px; min-height:150px; margin:14px 0; font-size:17px; }
+.card-front { font-weight:600; }
+.card-divider { border-top:2px dashed #d5dbe4; margin:16px 0; }
+.card-back { color:#1a73ba; font-weight:600; }
+.chip { display:inline-block; background:#e8f1fa; color:#1a73ba; border-radius:999px; padding:3px 12px; font-size:12px; font-weight:600; margin-left:10px; }
+.q-count { font-weight:700; }
+.exam-top { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+.timer { font-size:24px; font-weight:700; font-variant-numeric:tabular-nums; }
+.timer.low { color:#d92d20; }
+.q-text { font-size:17px; font-weight:600; margin:10px 0 14px; }
+.nav-btn { min-width:38px; padding:6px 8px; background:#eef1f5; }
+.nav-btn.answered { background:#1a73ba; color:#fff; }
+.nav-btn.current { outline:3px solid #ffb5aa; }
+.q-grid { display:flex; flex-wrap:wrap; gap:6px; margin-top:14px; }
+table.domains { border-collapse:collapse; width:100%; margin-top:8px; }
+table.domains th, table.domains td { padding:8px 10px; text-align:left; border-bottom:1px solid #e3e8ef; font-size:14px; }
+.score { font-size:44px; font-weight:800; }
+.badge { display:inline-block; border-radius:999px; padding:6px 18px; font-weight:700; }
+.badge.pass { background:#e6f4ea; color:#1e7e34; }
+.badge.fail { background:#fee4e2; color:#b42318; }
+.review-item { border:1px solid #e3e8ef; border-radius:10px; padding:14px 16px; margin-bottom:12px; }
+.review-item .ok { color:#1e7e34; font-weight:700; }
+.review-item .ko { color:#b42318; font-weight:700; }
+.explain { background:#f8fafc; border-left:4px solid #1a73ba; padding:10px 14px; margin-top:10px; border-radius:0 8px 8px 0; font-size:14px; }
+.tips h3 { margin-top:26px; }
+.muted { color:#667085; font-size:14px; }
+.upload-zone { border:2px dashed #b6c2d2; border-radius:12px; padding:22px; text-align:center; color:#667085; background:#f8fafc; }
+.upload-zone:hover { border-color:#1a73ba; color:#1a73ba; }
+.upload-status { font-weight:600; margin-top:10px; }
+"""
+
+# --------------------------------------------------------- AI PREP GUIDE
+# Full content of the official "AI Prep Guide: Databricks Certification"
+# (databricks.com), with the Step 4 "Orient" learning concepts and the Step 5
+# hands-on checklist executed for the Data Engineer Associate and
+# Professional certifications. Step 2's prime prompt and Step 4's loop
+# prompts are quoted from the official guide.
+
+PRIME_PROMPT = (
+    "I am preparing for the Databricks certification described in the attached "
+    "exam guide. When teaching me, use only current Databricks product names "
+    "and behaviors, and do not invent objectives that aren't in the guide. "
+    "Ground everything you teach in official Databricks sources — "
+    "docs.databricks.com and Databricks Academy — not third-party blogs, "
+    "tutorials, or forum posts. If you can browse the web, search "
+    "docs.databricks.com and cite the doc page URL for each key claim. If you "
+    "cannot confirm a claim in the official docs — or cannot browse at all — "
+    "tell me so explicitly rather than guessing, and point me to where in the "
+    "docs I should verify it myself. If you cannot accept PDF uploads, tell me "
+    "and I will paste the guide's \"Sections and Objectives\" as text instead."
+)
+
+STEP1 = """**You need:**
+
+* A **registered exam date** — book at webassessor.com/databricks (your deadline; used in Step 6)
+* Your **exam guide PDF** — download from the certification page on databricks.com; re-check it two weeks before your exam
+* An **LLM** — ChatGPT, Claude, Copilot, Genie Code, Gemini, or any other tool you have access to (the free tier is enough)
+* A **Databricks account** — Free Edition or a Trial; most exams cannot be passed by reading alone, you need hands-on practice
+* **Databricks Academy** — the official free learning platform with on-demand courses and learning paths (academy.databricks.com)
+* A **study journal** — a doc or plain text file where you track weak spots and unfamiliar terms"""
+
+STEP3 = """Every major AI was trained before the recent Databricks platform changes, so it confidently uses old product names. Run the guide's prompt once, save the table, and paste it at the start of every session. Key renames for the Data Engineer exams:
+
+| Old name an AI might use | Current name | What it does |
+| --- | --- | --- |
+| Delta Live Tables (DLT) | Lakeflow Spark Declarative Pipelines (SDP) | Declarative pipelines: streaming tables, materialized views, expectations |
+| Workflows | Lakeflow Jobs | Orchestration: tasks, dependencies, schedules, run-if |
+| Databricks Asset Bundles (DABs) | Declarative Automation Bundles | Deploy jobs, pipelines, dashboards as code with dev/prod targets |
+| Partner Connect | Lakeflow Connect | Managed connectors to SaaS sources (Salesforce, Workday, …) |
+| MLflow Model Registry | Unity Catalog models | Model lifecycle governance in Unity Catalog |
+| Model Serving | Mosaic AI Model Serving | Host models on REST endpoints |
+| Genie Space | Genie Agent | Natural-language Q&A over governed data |
+| SQL endpoint | SQL warehouse | Serverless SQL compute for queries and BI |
+
+*Verify any rename you are unsure about at docs.databricks.com — that is exactly what the guide asks your AI to do.*"""
+
+STEP4_LOOP = """For each section in your exam guide, paste these prompts in order:
+
+| # | Step | Prompt (paste, fill in the bracket) |
+| --- | --- | --- |
+| 1 | Orient | "Give me a plain-English overview of the objectives from [SECTION] of the exam guide I shared. One sentence per objective." |
+| 2 | Diagnose | "Quiz me with 10 multiple-choice questions on [SECTION], in the style of an actual Databricks certification exam. Don't show answers until I respond." |
+| 3 | Deep dive | "Teach me [SPECIFIC OBJECTIVE I MISSED, COPY-PASTED VERBATIM FROM THE EXAM GUIDE], using only official Databricks documentation (docs.databricks.com) and Databricks Academy materials as your sources — not third-party blogs or forums. If you can browse, cite the exact doc page URL next to each claim; if you can't verify something in the official docs, say so rather than guessing. Include: core concept, how it works on Databricks, when to use vs. alternatives, common mistakes, one code example I can run." |
+| 4 | Practice | "Generate a full mock exam matching the number of scored questions specified in the exam guide, distributed across the objectives in the proportions the guide implies. Don't reveal answers until I submit all responses." |
+| 5 | Repair | "Here are the questions I got wrong: [PASTE]. For each: explain my misconception, explain why the right answer is right, and give me a related question that tests the same concept differently." |
+
+Step 1 (Orient) is executed for you below — the learning concepts for every exam section of your certification. For Steps 2 and 4, use this app's **Practice Exams** tab; for Steps 3 and 5, read every wrong answer's explanation in the results review."""
+
+CONCEPTS = {
+    "associate": """### Orient — learning concepts by exam section (Associate)
+
+#### Databricks Intelligence Platform (6%)
+* Workspace anatomy: notebooks, queries, AI/BI dashboards, and Git folders — notebooks sync to Git as standard `.ipynb` files
+* Compute types: all-purpose clusters (shared, interactive), job clusters (created per run, isolated, auto-terminated), serverless compute, and SQL warehouses
+
+#### Data Ingestion and Loading (21%)
+* Auto Loader (`cloudFiles` format) ingests new files incrementally and scales to millions of files, with schema evolution and file-notification modes
+* COPY INTO is the simpler, idempotent, reprocessable load — best for smaller file sets
+* Delta Lake = Parquet files + the `_delta_log` transaction log, giving ACID commits and serializable writes
+* MERGE INTO is the key-based upsert (CDC) pattern; Delta adds ACID, schema enforcement, and time travel over plain Parquet
+
+#### Data Transformation and Modeling (22%)
+* Lazy evaluation: transformations build a plan, actions (count, collect, write) trigger it
+* Narrow vs wide transformations — a shuffle is the expensive part; prefer built-ins over Python UDFs (Catalyst-optimized, no serialization)
+* DataFrames, `createOrReplaceTempView`, `spark.sql`, and window functions (running totals, rankings)
+* Medallion architecture: bronze (raw, as-is) → silver (validated, deduplicated, conformed) → gold (aggregated business models)
+* Time travel: `VERSION AS OF` / `TIMESTAMP AS OF`, `DESCRIBE HISTORY`, `RESTORE TABLE`
+
+#### Working with Lakeflow Jobs (16%)
+* Jobs are tasks with dependencies; "run if" conditions trigger a task on upstream failure (alerting and error handling)
+* Job clusters vs all-purpose clusters; schedules and trigger types
+
+#### Implementing CI/CD (10%)
+* Git folders: clone a repo, work on a branch, push, open a pull request
+* Declarative Automation Bundles: resources defined as code with environment targets (dev → prod)
+
+#### Troubleshooting, Monitoring, and Optimization (10%)
+* OPTIMIZE compacts small files; ZORDER co-locates similar values for data skipping; VACUUM reclaims storage past retention
+* Query profile and `df.explain()` to find slow stages, shuffles, and spills
+
+#### Governance and Security (15%)
+* Unity Catalog: catalog → schema → table, one permission model across workspaces
+* Grant chain: USE CATALOG → USE SCHEMA → SELECT
+* Managed tables (UC controls storage; DROP deletes data) vs external tables (data survives DROP); lineage is captured automatically
+
+""",
+    "professional": """### Orient — learning concepts by exam section (Professional)
+
+#### Developing Code for Data Processing using Python and SQL (22%)
+* Idiomatic Spark: window functions, `when`/`otherwise` branching, higher-order functions; built-ins over UDFs
+* Streaming code: `withWatermark` bounds late data so state can be evicted; `trigger(availableNow=True)` drains all available data then stops (incremental backfills)
+* `foreachBatch` applies custom logic per micro-batch (non-Delta sinks, idempotent MERGE); checkpoint location = resumability + effectively-once into Delta
+
+#### Data Ingestion & Acquisition (7%)
+* Change data feed: `table_changes()` returns row-level inserts/updates/deletes
+* Streaming tables (incremental, append-only) vs materialized views (fully recomputed on refresh) in Lakeflow pipelines
+* Append flows combine multiple sources or one-time backfills into one streaming table; Auto Loader is the file-ingestion pattern
+
+#### Data Transformation, Cleansing, and Quality (10%)
+* Expectations: `expect` keeps bad records and reports metrics; `expect_or_drop` removes them
+* Constraints: NOT NULL and CHECK enforced on write
+* Generated columns (`GENERATED ALWAYS AS`) compute values at write time — clustering/partitioning on derived values
+
+#### Data Sharing and Federation (5%)
+* Delta Sharing: shares, providers, and recipients — live governed data without copying
+* Foreign catalogs federate external databases through standard connections
+
+#### Monitoring and Alerting (10%)
+* System tables: query history, lineage, audit; job notifications and alerting
+* Predictive optimization runs OPTIMIZE/VACUUM automatically on managed tables
+
+#### Cost & Performance Optimisation (13%)
+* AQE re-optimizes at runtime: broadcast join conversion, shuffle partition coalescing, skew handling
+* Broadcast small dimension tables; salt hot keys; cache only what you reuse
+* Deletion vectors make DML cheap; liquid clustering (`CLUSTER BY`) replaces static partitioning/ZORDER
+
+#### Ensuring Data Security and Compliance (10%)
+* Row filters (boolean function) and column masks (masking function) with caller context (`is_account_group_member`)
+* Service principals and OAuth for non-interactive access
+
+#### Data Governance (7%)
+* Automatic lineage; ownership and grants; tags for classification and PII
+
+#### Debugging and Deploying (10%)
+* Query profile for plans and stage timings; reading `EXPLAIN` output
+* Declarative Automation Bundle targets: same bundle, per-environment values, `bundle deploy --target prod`
+
+""",
+}
+
+HANDSON = {
+    "associate": """Almost every Databricks certification assesses practical skills, not just factual recall. Build every item below in your workspace (Free Edition or a free trial is enough; each task takes under 30 minutes):
+
+1. Upload a CSV into a Unity Catalog volume and read it with Spark — *Databricks Intelligence Platform*
+2. Create a bronze streaming table from cloud files using Auto Loader — *Data Ingestion and Loading*
+3. Build a silver table with SQL: join, dedup, and a window function — *Data Transformation and Modeling*
+4. MERGE a change file into a Delta table on a key (upsert) — *Data Ingestion and Loading*
+5. Query `VERSION AS OF`, run `DESCRIBE HISTORY`, then `RESTORE TABLE` — *Data Transformation and Modeling*
+6. Run OPTIMIZE and VACUUM on a Delta table — *Troubleshooting, Monitoring, and Optimization*
+7. Build a two-task Lakeflow Job with a run-if failure path and a schedule — *Working with Lakeflow Jobs*
+8. Grant a group the USE CATALOG → USE SCHEMA → SELECT chain and verify access — *Governance and Security*
+9. Clone a repo in a Git folder and make a change on a branch — *Implementing CI/CD*
+
+Any task you can't complete fluently is your next study target.""",
+    "professional": """Build every item below in your workspace (Free Edition or a free trial is enough; each task takes under 30 minutes):
+
+1. Build a pipeline with expectations (`expect` + `expect_or_drop`) and inspect the metrics — *Data Transformation, Cleansing, and Quality*
+2. Create one streaming table and one materialized view in the same pipeline — *Data Ingestion & Acquisition*
+3. Run a streaming aggregation with a watermark on rate data — *Developing Code using Python and SQL*
+4. Backfill incrementally with `trigger(availableNow=True)` and a durable checkpoint — *Developing Code using Python and SQL*
+5. Read changes with `table_changes()` after an UPDATE — *Data Ingestion & Acquisition*
+6. Apply a row filter and a column mask using `is_account_group_member` — *Ensuring Data Security and Compliance*
+7. Create a table with liquid clustering + deletion vectors and compare MERGE cost — *Cost & Performance Optimisation*
+8. Initialize and deploy a bundle with `--target dev` — *Debugging and Deploying*
+9. Compare a shuffle join vs a broadcast join plan with `explain()` — *Cost & Performance Optimisation*
+10. Share a table with an internal recipient via Delta Sharing — *Data Sharing and Federation*
+
+Any task you can't complete fluently is your next study target.""",
+}
+
+PACE = """* Book the exam date first, then work backward in **2-week sprints** (more time → extra sprints on the middle row)
+* **First quarter** of your time: Diagnose every section; identify your weakest 2–3
+* **Middle half**: deep-dive into weak objectives and build the hands-on labs
+* **Final quarter**: full mock exams (Step 4 / this app's Practice Exams tab) to surface weak spots and build stamina — they are not a calibrated readiness check; your real signal is full coverage of the exam guide objectives plus hands-on confidence
+
+**Short on time? The quick five:** prime your AI every session with the exam guide + renamed-product table · diagnose before you study · run every code snippet and verify at docs.databricks.com (no URL means it's guessing) · cross-check key topics with a second AI · build the hands-on list — reading alone will not pass any Databricks certification."""
+
+
+# Deep-dive concept lessons, keyed by (cert_level, domain). Each lesson has a
+# detailed explanation, a runnable example, and an exam-style question with the
+# correct answer. Other domains fall back to their guide concepts below.
+LESSONS = {
+    (
+        "associate",
+        "Data Transformation and Modeling (22%)",
+    ): [
+        {
+            "title": "Concept 1 — Lazy evaluation: transformations vs actions",
+            "section": "Data Transformation and Modeling (22%)",
+            "body": """**Why it matters for the exam:** the single most-tested Spark idea. Spark does nothing when you transform data — it only builds a logical plan. **Transformations** (`select`, `filter`, `withColumn`, `groupBy`, `join`, `dropDuplicates`) are *lazy*: they add steps to the plan. **Actions** (`count`, `collect`, `show`, `take`, `.write`, `toPandas`, `first`) submit a job and actually run the plan. Because the full plan is known before execution, Catalyst optimizes the whole query — predicate pushdown, column pruning, and even skipping files that can't match a filter.
+
+**Simple example**
+```python
+df = spark.read.csv("s3://bucket/sales.csv")                 # lazy
+clean = df.filter("amount > 0").select("user", "amount")     # still lazy
+clean.count()   # ACTION — only now does Spark read and compute
+```
+
+**How the exam asks it**
+> A data engineer runs `df.filter(df.amount > 0).select("user")`. No job appears in the Spark UI. What is the most likely reason?
+
+✅ **`filter` and `select` are lazy transformations — Spark executes only when an action such as `count()` or `write()` is called.** Trap options: "the cluster is under-provisioned", "the command failed silently", "results are served from cache".
+
+Bonus: the chain of transformations is the **lineage**; it lets Spark recompute any lost partition — laziness is also what enables fault tolerance.""",
+        },
+        {
+            "title": "Concept 2 — Narrow vs wide transformations (shuffles)",
+            "section": "Data Transformation and Modeling (22%)",
+            "body": """**Why it matters for the exam:** know which operations move data between partitions — a **shuffle** writes partitions to disk and sends them over the network. **Narrow** transformations (`filter`, `select`, `withColumn`, `map`) use only the data already in each output partition's input — no shuffle, very fast. **Wide** transformations (`groupBy`, `join`, `orderBy`, `distinct`, `repartition`, window functions) require data with the same key to be brought together — a shuffle, the number-one cost in Spark jobs.
+
+**Simple example**
+```python
+s = df.filter("amount > 0")           # narrow — free
+s = s.withColumn("vat", F.col("amount") * 0.2)   # narrow — free
+agg = s.groupBy("country").sum("amount")         # WIDE — shuffle by country
+```
+
+**How the exam asks it**
+> A query is slow. The Spark UI shows a stage with a long *shuffle read*. Which operation most likely caused it?
+
+✅ **A wide transformation such as `groupBy`, `join`, or `orderBy`** — they must exchange rows across partitions. Also asked directly: "Which TWO operations trigger a shuffle?" (answers: `groupBy`, `join`, `distinct`, `orderBy` — not `filter`/`select`/`withColumn`).
+
+Exam habit: filter and select columns **early** (before joins), and keep join/group keys aligned with the table's clustering/partitioning to shrink shuffles.""",
+        },
+        {
+            "title": "Concept 3 — Built-in functions vs Python UDFs",
+            "section": "Data Transformation and Modeling (22%)",
+            "body": """**Why it matters for the exam:** a favorite scenario question. **Built-in functions** (`pyspark.sql.functions`: `upper`, `coalesce`, `when`, `date_add`, `regexp_replace`, aggregations, `split`…) run inside the JVM and are understood and optimized by Catalyst. A **Python UDF** serializes every row to a Python worker process and back (pickling) — the optimizer can't look inside it, so it blocks pushdown/pruning and is dramatically slower. Rule: always prefer a built-in; if you must use Python, use a **pandas UDF** (Arrow-batched, vectorized) rather than a row-at-a-time UDF.
+
+**Simple example**
+```python
+# GOOD — built-in, optimized
+df = df.withColumn("name_clean", F.upper(F.trim(F.col("name"))))
+
+# SLOW — Python UDF, row-by-row serialization
+@F.udf("string")
+def upper_udf(x): return x.strip().upper()
+df = df.withColumn("name_clean", upper_udf(F.col("name")))
+```
+
+**How the exam asks it**
+> A job using a Python UDF to format a column takes far longer than expected. What should the data engineer do to improve performance?
+
+✅ **Replace the UDF with the equivalent built-in Spark SQL function** (or a pandas UDF if no built-in exists). Trap options: "increase the cluster size", "cache the DataFrame", "convert to RDD". UDFs also break predicate pushdown — a filter applied *after* a UDF column can no longer be pushed into the read.""",
+        },
+        {
+            "title": "Concept 4 — DataFrames and Spark SQL work together (temp views)",
+            "section": "Data Transformation and Modeling (22%)",
+            "body": """**Why it matters for the exam:** you must know the two APIs are interchangeable — same engine, same optimizer, same results. `df.createOrReplaceTempView("v")` registers a **session-scoped** view (no data is copied or materialized, it's just a name for the lazy plan). Then `spark.sql("SELECT … FROM v …")` queries it like a table. The view disappears when the session/cluster ends; it is *not* persisted to storage. Also know: SQL and DataFrame code can be mixed freely, and both stay lazy until an action.
+
+**Simple example**
+```python
+df.createOrReplaceTempView("orders")
+top = spark.sql(
+    "SELECT user_id, SUM(amount) AS total "
+    "FROM orders GROUP BY user_id ORDER BY total DESC LIMIT 10"
+)
+top.show()   # action
+```
+
+**How the exam asks it**
+> A data engineer has a DataFrame `df` and wants to query it using SQL in the same notebook. What should they do?
+
+✅ **`df.createOrReplaceTempView("orders")`, then run `spark.sql("SELECT …")`**. Follow-ups: "How long does a temp view exist?" → for the lifetime of the Spark session; "Does it store a copy of the data?" → no, it's a pointer to the plan.""",
+        },
+        {
+            "title": "Concept 5 — Window functions (rank, running totals, lag)",
+            "section": "Data Transformation and Modeling (22%)",
+            "body": """**Why it matters for the exam:** classic "how would you compute X" questions. A window function computes a value per **row** using related rows, *without collapsing* them the way `groupBy` does. Three parts: `partitionBy` (the window group — e.g. per customer), `orderBy` (row order inside the window), and the frame (`rowsBetween`/`rangeBetween`, default for rank-like functions: all rows up to the current one). Typical uses: `row_number`, `rank`, `dense_rank` (top-N per group), running totals, moving averages, `lag`/`lead` (compare to the previous row).
+
+**Simple example**
+```python
+w = Window.partitionBy("customer_id").orderBy("ts")
+s = (df.withColumn("rn", F.row_number().over(w))
+      .withColumn("running", F.sum("amount").over(w.rowsBetween(Window.unboundedPreceding, 0))))
+```
+
+**How the exam asks it**
+> Which approach computes a *running total per customer* while keeping every individual order row?
+
+✅ **A window function: `SUM(amount) OVER (PARTITION BY customer_id ORDER BY ts)`** — `groupBy`+`sum` would collapse rows to one per customer, losing detail. Also asked: dedup by keeping `row_number() = 1` (see Concept 8), or `lag` for month-over-month change. Note: window functions are **wide** — they shuffle by the partition key.""",
+        },
+        {
+            "title": "Concept 6 — Medallion architecture: bronze, silver, gold",
+            "section": "Data Transformation and Modeling (22%)",
+            "body": """**Why it matters for the exam:** Databricks' signature data design; expect 2–3 questions. Data flows through layers of increasing quality. **Bronze** = raw, as-is ingestion — keep the source shape, append-only, replayable (you can always rebuild downstream from bronze). **Silver** = cleaned, validated, deduplicated, conformed — schemas enforced, records joined to reference data, one row per business entity (via MERGE/upsert). **Gold** = business-level aggregates and metrics — the tables dashboards and ML consume. Each layer adds quality and speed for its consumers; you reprocess rather than fix in place.
+
+**Simple example**
+```sql
+-- silver: dedup + validate
+CREATE OR REPLACE TABLE silver_orders AS
+SELECT * FROM (
+  SELECT *, ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY updated_at DESC) rn
+  FROM bronze_orders)
+WHERE rn = 1 AND amount > 0;
+
+-- gold: business aggregate
+CREATE OR REPLACE TABLE gold_daily_sales AS
+SELECT order_date, region, SUM(amount) AS sales FROM silver_orders GROUP BY 1, 2;
+```
+
+**How the exam asks it**
+> Raw CDC data lands unmodified in which layer? ✅ **Bronze.** Where should duplicate records be removed and schemas enforced? ✅ **Silver.** Which layer do BI dashboards typically query? ✅ **Gold.** Trap: "dedup happens in bronze" or "gold stores raw data for replay" — no, bronze does.""",
+        },
+        {
+            "title": "Concept 7 — Time travel: VERSION AS OF, DESCRIBE HISTORY, RESTORE",
+            "section": "Data Transformation and Modeling (22%)",
+            "body": """**Why it matters for the exam:** every write to a Delta table creates a new **version** in the transaction log. You can query the past with **time travel**: `SELECT * FROM t VERSION AS OF 3` or `TIMESTAMP AS OF '2026-11-01'` — great for debugging and comparing before/after a bad job. `DESCRIBE HISTORY t` lists every version, operation, and timestamp. `RESTORE TABLE t TO VERSION AS OF 3` makes an old version the *current* one (it doesn't delete history; it adds a restore entry). Limits: `VACUUM` physically removes files older than the retention period (default 7 days) — after vacuum you cannot time travel past what was removed.
+
+**Simple example**
+```sql
+DESCRIBE HISTORY sales;                                -- find the last good version
+SELECT * FROM sales VERSION AS OF 12;                 -- inspect it
+RESTORE TABLE sales TO VERSION AS OF 12;              -- roll back
+```
+
+**How the exam asks it**
+> A job accidentally overwrote yesterday's data in a Delta table. What is the fastest way to recover it?
+
+✅ **`RESTORE TABLE … TO VERSION AS OF` the previous version** — no re-ingestion needed. Trap options: "re-run the ingestion pipeline", "use MERGE to reinsert" (slow, unnecessary). Follow-up: "what limits how far back you can query?" → VACUUM / retention period.""",
+        },
+        {
+            "title": "Concept 8 — Deduplication and join patterns (silver-table classics)",
+            "section": "Data Transformation and Modeling (22%)",
+            "body": """**Why it matters for the exam:** the standard "keep the latest row per key" pattern appears in some form on nearly every Data Engineer exam. CDC and re-ingestion deliver the same business row many times; silver tables must keep **one row per key, the newest version**. The canonical pattern: `ROW_NUMBER() OVER (PARTITION BY key ORDER BY updated_at DESC)` then keep `rn = 1`. Know also `dropDuplicates(["key"])` (nondeterministic *which* duplicate survives — the window version is explicit) and `MERGE INTO … WHEN MATCHED THEN UPDATE` for incremental upserts into an existing silver table.
+
+**Simple example**
+```sql
+CREATE OR REPLACE TABLE silver_customers AS
+SELECT * EXCEPT (rn) FROM (
+  SELECT c.*,
+         ROW_NUMBER() OVER (PARTITION BY customer_id
+                            ORDER BY updated_at DESC) AS rn
+  FROM bronze_customers) WHERE rn = 1;
+```
+
+**How the exam asks it**
+> Bronze contains multiple versions of each customer. Which approach produces one row per customer, keeping the most recent record for each?
+
+✅ **A window function ranking by `updated_at DESC per customer_id` and filtering rank = 1.** Trap: plain `dropDuplicates()` — it keeps *an arbitrary* row unless you rank it yourself; also `groupBy(customer_id)` without an aggregation collapses data instead of selecting the latest row. Pair this with MERGE when the silver table must be updated incrementally rather than rebuilt.""",
+        },
+        {
+            "title": "Concept 9 — Complex scenario: CDC upserts with MERGE (and the multi-match failure)",
+            "section": "Data Transformation and Modeling (22%)",
+            "body": """**Why it matters for the exam:** `MERGE` is the upsert workhorse — `WHEN MATCHED THEN UPDATE` fixes existing keys, `WHEN NOT MATCHED THEN INSERT` adds new ones. The classic complex twist: the CDC batch contains **several changes per key**, and MERGE fails with *multiple source rows matched and attempted to modify the same target row*. The fix is always the same: reduce the source to one row per key first, keeping the **latest** change with a `row_number()` window on the change sequence.
+
+**Worked example (scenario)**
+```python
+from pyspark.sql import functions as F, Window
+w = Window.partitionBy("customer_id").orderBy(F.col("_seq").desc())
+latest = (spark.table("bronze.cdc")
+          .withColumn("rn", F.row_number().over(w))
+          .filter("rn = 1").drop("rn"))
+(latest.alias("s")
+ .merge(spark.table("silver.customers").alias("t"),
+        "t.customer_id = s.customer_id")
+ .whenMatchedUpdateAll().whenNotMatchedInsertAll().execute())
+```
+
+**How the exam asks it**
+> A MERGE fails with multiple source rows matched on the same target row. The feed contains several updates per key per batch and only the latest should win.
+
+✅ **Deduplicate the source with a `row_number()` window on the change sequence, keeping rank = 1.** Traps: "INSERT OVERWRITE the target" (loses other rows), "randomly sample the source" (loses changes), "increase cluster memory" (not a resource problem).""",
+        },
+        {
+            "title": "Concept 10 — Complex scenario: SCD Type 2 history that still answers current-state queries",
+            "section": "Data Transformation and Modeling (22%)",
+            "body": """**Why it matters for the exam:** when a dimension must show the **current** state *and* answer "what did we know on date X", use **SCD Type 2**: keep every row version with effective `__START_AT`/`__END_AT` dates. In a pipeline that is `apply_changes(..., stored_as_scd_type=2)`; in plain SQL you maintain the interval columns in your own MERGE. SCD Type 1 (update in place) destroys history — the most common trap option.
+
+**Worked example (scenario)**
+```python
+dlt.apply_changes(
+    target="dim_customers",
+    source="cdc_customers",
+    keys=["customer_id"],
+    sequence_by=F.col("_seq"),
+    stored_as_scd_type=2,     # full history with start/end dates
+)
+# current state = filter __END_AT IS NULL
+```
+
+**How the exam asks it**
+> A dimension must preserve every historical version of each customer while still serving current-state queries.
+
+✅ **SCD Type 2 — retain row versions with effective start/end dates.** Traps: "update rows in place" (SCD 1 loses history), "drop and reload daily, keeping yesterday's copy", "store history in plain Parquet alongside".""",
+        },
+        {
+            "title": "Concept 11 — Complex scenario: data skew — the one-task straggler",
+            "section": "Data Transformation and Modeling (22%)",
+            "body": """**Why it matters for the exam:** the signature of **skew** is a stage where most tasks finish in minutes but one straggler runs for an hour. Cause: one dominant join/group key — or masses of NULL keys that all hash into one partition. Fixes, in order: **(1)** handle the dominant value separately (filter NULLs and process them in their own branch); **(2)** let **AQE** split skewed partitions at runtime; **(3)** broadcast the small side; **(4)** **salt** the hot key.
+
+**Worked example (scenario)**
+```python
+facts = facts.filter("cust_id IS NOT NULL")   # stop NULLs skewing one task
+spark.conf.set("spark.sql.adaptive.skewJoin.enabled", "true")
+joined = facts.join(broadcast(dims), "cust_id")
+```
+
+**How the exam asks it**
+> 199 tasks finish in about 2 minutes, one runs 40 minutes, and 70% of rows share one customer_id.
+
+✅ **Filter or re-key the dominant value before the shuffle, or enable AQE skew handling.** Traps: "make the cluster 10x bigger", "repartition to one file", "disable the Spark UI to save memory".""",
+        },
+        {
+            "title": "Concept 12 — Complex scenario: window functions for running totals and latest-row-per-key",
+            "section": "Data Transformation and Modeling (22%)",
+            "body": """**Why it matters for the exam:** two gold-table patterns, both window functions. *Running totals:* `SUM(...) OVER (PARTITION BY ... ORDER BY ... ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)`. *Latest row per key:* `row_number()` over `PARTITION BY key ORDER BY ts DESC`, filter `rn = 1`. A plain GROUP BY can do neither — it collapses rows instead of walking them.
+
+**Worked example (scenario)**
+```sql
+SELECT customer_id, month,
+  SUM(revenue)                                         AS month_total,
+  SUM(revenue) OVER (PARTITION BY customer_id, month ORDER BY day
+    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)  AS mtd_running
+FROM daily_revenue;
+```
+
+**How the exam asks it**
+> Finance needs each customer's cumulative month-to-date revenue alongside monthly revenue in one query.
+
+✅ **A window partitioned by customer and month ordered by day, with SUM over an unbounded-preceding-to-current-row frame.** Traps: "GROUP BY with sum and max as extra columns", "self-join on all earlier days", "broadcast self-join with a day rollup".""",
+        },
+        {
+            "title": "Concept 13 — Complex scenario: time-travel surgery after a bad batch",
+            "section": "Data Transformation and Modeling (22%)",
+            "body": """**Why it matters for the exam:** a bad batch lands at 10:00 and good data keeps arriving after 11:00. `RESTORE TABLE ... TO VERSION AS OF` reverts to a snapshot but **also loses every commit made after it** — so when the question says "keep the later data", the answer is targeted surgery: read the pre-bad version with **time travel** and `MERGE` only the affected keys back in.
+
+**Worked example (scenario)**
+```python
+good = (spark.read.option("versionAsOf", 41).table("sales")
+        .filter("region = 'EMEA'"))          # rows as of before the bad batch
+(good.alias("s")
+ .merge(spark.table("sales").alias("t"), "t.order_id = s.order_id")
+ .whenMatchedUpdateAll().execute())          # surgical repair only
+```
+
+**How the exam asks it**
+> Revert only the 10:00 corruption while keeping everything loaded after 11:00.
+
+✅ **MERGE the corrected rows from the pre-bad snapshot via time travel.** Traps: "RESTORE to the version before 10:00" (discards the later good commits), "VACUUM immediately", "OPTIMIZE with ZORDER".""",
+        },
+        {
+            "title": "Concept 14 — Complex scenario: liquid clustering vs over-partitioning",
+            "section": "Data Transformation and Modeling (22%)",
+            "body": """**Why it matters for the exam:** partitioning a low-volume table by date explodes into **tiny partitions and files** — the over-partitioned-table trap. **Liquid clustering** (`CLUSTER BY`) works at any key cardinality, reclusters incrementally with `OPTIMIZE`, and its keys can even be changed later. Rule of thumb: partition only genuinely high-volume keys (like dates on big tables); cluster everything else.
+
+**Worked example (scenario)**
+```sql
+CREATE OR REPLACE TABLE sales.gold_orders (
+  order_id BIGINT, customer_id BIGINT, order_date DATE)
+CLUSTER BY (customer_id);
+
+OPTIMIZE sales.gold_orders;   -- incremental recluster
+```
+
+**How the exam asks it**
+> A few thousand rows per day partitioned by date; queries filter on customer_id (millions of values).
+
+✅ **Replace Hive partitioning with liquid clustering on the high-cardinality filter columns.** Traps: "add more partition columns", "partition by customer_id" (one directory per customer — far worse), "disable statistics collection".""",
+        },
+    ],
+    (
+        "associate",
+        "Databricks Intelligence Platform (6%)",
+    ): [
+        {
+            "title": "Concept 1 — Workspace anatomy: where everything lives",
+            "section": "Databricks Intelligence Platform (6%)",
+            "body": """**What it is:** the workspace is your project space — a folder tree that holds **notebooks** (code + results), **SQL queries** (saved queries in the SQL editor), **AI/BI dashboards** (visualizations), and **files**. Know which tool for which job: multi-language exploration → notebook; pure SQL analysis → query editor; sharing visual results with business users → dashboard. Your code lives in the **workspace**; your data lives in **Unity Catalog** — that separation is itself a common exam point.
+
+**Simple example:** create a notebook `01_explore_orders`, attach compute, run `%sql SELECT * FROM workspace.cert_prep.questions LIMIT 5`. Then click a dashboard to see how results are shared.
+
+**How the exam asks it**
+> An analyst wants to explore data with both Python and SQL, keeping code and output together in one document. What should they use?
+
+✅ **A Databricks notebook.** A SQL query holds only SQL; a dashboard is read-only for consumers.""",
+        },
+        {
+            "title": "Concept 2 — Notebooks: languages, magics, and cell execution",
+            "section": "Databricks Intelligence Platform (6%)",
+            "body": """**What it is:** every notebook has a default language, and you switch per cell with **magics**: `%sql`, `%python`, `%md` (markdown), `%r`, `%scala`. Cells run top-to-bottom with *Run all*; variables are shared between cells of the same language. Notebooks save as standard **`.ipynb`** files — which is exactly why they sync cleanly with Git folders.
+
+**Simple example**
+```python
+%sql
+SELECT region, SUM(amount) FROM sales GROUP BY region
+```
+
+**How the exam asks it**
+> A data engineer's notebook uses SQL as the default language. How can they run one Python cell inside it?
+
+✅ **Start the cell with `%python`.** Follow-up classic: "Notebook files exported to Git are in what format?" → `.ipynb` (standard, open format).""",
+        },
+        {
+            "title": "Concept 3 — Compute types: which one for which job",
+            "section": "Databricks Intelligence Platform (6%)",
+            "body": """**What it is:** four compute flavors, and the exam loves "which should they use?": **All-purpose clusters** — interactive, shared between users, run until you stop them. **Job clusters** — created fresh for each job run, fully isolated, auto-terminated when the job ends (cheapest and most reproducible for scheduled work). **Serverless compute** — starts in seconds, no cluster management at all. **SQL warehouses** — SQL-specific compute for queries, dashboards, and BI tools.
+
+**Simple example:** a daily 6am load job → job compute. An analyst exploring interactively → all-purpose or serverless. A dashboard refresh → SQL warehouse.
+
+**How the exam asks it**
+> A scheduled daily job must minimize cost and not leave compute running. Which compute should it use?
+
+✅ **Job clusters** — they start with the run and are terminated automatically afterwards. Trap: "all-purpose cluster, stop it manually" (wasteful, forgettable, never reproducible).""",
+        },
+        {
+            "title": "Concept 4 — Code in the workspace, data in the catalog",
+            "section": "Databricks Intelligence Platform (6%)",
+            "body": """**What it is:** a small but recurring exam distinction. **Workspace** stores notebooks, queries, dashboards, files, and Git repos — with folder-level permissions. **Unity Catalog** stores data objects (catalogs, schemas, tables, views, volumes) — with a completely separate, unified permission model (grants). You cannot `GRANT` a notebook; you cannot query a workspace folder. Keep the two planes apart in your head and several questions answer themselves.
+
+**Simple example:** `USE CATALOG workspace; USE SCHEMA cert_prep; SELECT * FROM questions;` — data objects only. Sharing a notebook with a colleague happens through workspace folder permissions, not grants.
+
+**How the exam asks it**
+> Where does a data engineer manage access to tables across multiple workspaces?
+
+✅ **Unity Catalog** — one governance layer for data, wherever the code that reads it lives (notebook, job, or dashboard).""",
+        },
+        {
+            "title": "Concept 5 — Complex scenario: one lakehouse for ML and audited ETL",
+            "section": "Databricks Intelligence Platform (6%)",
+            "body": """**Why it matters for the exam:** the headline lakehouse scenario. ML workloads (video pipelines, feature engineering) need **open, file-level access** — frameworks read Parquet/Delta directly. Audited ETL/ELT needs **ACID transactions, schema enforcement, and history**. The lakehouse offers both on **one copy** of the data, governed by Unity Catalog — no copy into a proprietary format, no second platform.
+
+**Worked example (scenario)** the same Delta table serves both worlds:
+```python
+# ML: direct open-format access from notebooks / MLflow runs
+df = spark.table("lake.video_features")
+
+# Governed ETL: ACID writes plus a full audit trail
+spark.table("lake.video_features").history().show()
+```
+
+**How the exam asks it**
+> A data architect designs a model that works for video-based ML workloads and highly audited batch ETL/ELT workloads. How does a lakehouse help?
+
+✅ **It stores open-format data that ML frameworks read directly, while ACID transactions and audit history serve the governed ETL workloads on the same copy.** Traps: "ML must copy data into a proprietary format first", "the lakehouse is batch-ETL only", "audit history is removed to speed ML up".""",
+        },
+        {
+            "title": "Concept 6 — Complex scenario: matching compute to workload on a budget",
+            "section": "Databricks Intelligence Platform (6%)",
+            "body": """**Why it matters for the exam:** cost is a platform question. Match compute to workload: **SQL warehouses** for dashboards and analysts, **job compute** (ephemeral, created per run) for scheduled ETL, **all-purpose/serverless** compute for interactive notebooks. Wrong pairings — one big all-purpose cluster for everyone, job clusters for interactive work — are the classic trap answers. Add idle **auto-termination** and **tags** for billing attribution.
+
+**Worked example (scenario)** three teams, three compute choices:
+```text
+Analysts    -> serverless SQL warehouse (auto-stop after 10 min idle)
+Nightly ETL -> job compute (terminates when the run ends)
+ML session  -> all-purpose / serverless interactive compute
+```
+
+**How the exam asks it**
+> A startup has BI analysts, scheduled ETL engineers, and one ad-hoc Python data scientist on a tight budget.
+
+✅ **Warehouses for dashboards, job compute for scheduled ETL, serverless/all-purpose for interactive Python.** Traps: "one shared all-purpose cluster 24/7", "job clusters for interactive exploration to save money", "warehouses for the ETL jobs".""",
+        },
+    ],
+    (
+        "associate",
+        "Data Ingestion and Loading (21%)",
+    ): [
+        {
+            "title": "Concept 1 — Auto Loader: incremental file ingestion",
+            "section": "Data Ingestion and Loading (21%)",
+            "body": """**What it is:** the go-to way to ingest files from cloud storage into Delta. Auto Loader (`format("cloudFiles")`) streams **newly arriving files** into a table incrementally — it remembers what it already processed in a **checkpoint**, so re-runs never duplicate data. It scales to millions of files and supports **schema evolution** (new columns in source files are handled, not fatal). Two discovery modes: **directory listing** (polls the folder) and **file notification** (uses cloud event notifications — faster and cheaper at huge scale).
+
+**Simple example**
+```python
+(spark.readStream.format("cloudFiles")
+     .option("cloudFiles.format", "csv")
+     .option("cloudFiles.schemaLocation", chk)
+     .load("s3://bucket/landing/")
+     .writeStream.option("checkpointLocation", chk)
+     .toTable("bronze_orders"))
+```
+
+**How the exam asks it**
+> Files land continuously in an S3 folder; each file must be ingested exactly once as it arrives. What should the engineer use?
+
+✅ **Auto Loader** — incremental, exactly-once via checkpoint, schema evolution built in.""",
+        },
+        {
+            "title": "Concept 2 — Auto Loader vs COPY INTO: when to use which",
+            "section": "Data Ingestion and Loading (21%)",
+            "body": """**What it is:** the most-asked ingestion comparison. **COPY INTO** is a simple SQL statement that bulk-loads files from a folder; it is **idempotent** — safe to re-run, it just skips already-loaded files. It re-lists the folder on every run, so it works best with *small-to-moderate* file counts (≤ tens of thousands). **Auto Loader** is streaming, tracks progress in a checkpoint, handles **millions** of files, and gives near-real-time availability. Rule: ad-hoc/moderate loads and SQL-only pipelines → COPY INTO; continuous or huge-scale → Auto Loader.
+
+**Simple example**
+```sql
+COPY INTO bronze_orders
+FROM 's3://bucket/landing/'
+FILEFORMAT = CSV;
+```
+
+**How the exam asks it**
+> A team ingests ~50 CSVs per week and wants a simple, re-runnable SQL load. Which is the best fit? ✅ **COPY INTO.** Flip it: "millions of small files, continuous arrival" → Auto Loader.""",
+        },
+        {
+            "title": "Concept 3 — The Delta transaction log and ACID",
+            "section": "Data Ingestion and Loading (21%)",
+            "body": """**What it is:** Delta Lake = Parquet files + a **`_delta_log`** folder of JSON commit files. Every write (insert/update/delete/optimize) creates a new **commit/version** that records exactly which files changed. Readers pick a snapshot version — so **readers never block writers, writers never block readers** (snapshot isolation), and concurrent writers are serialized safely. This is what makes Delta *ACID* on a data lake.
+
+**Simple example:** `DESCRIBE HISTORY orders;` lists each commit: version, operation (WRITE/MERGE/OPTIMIZE), timestamp, user.
+
+**How the exam asks it**
+> What provides ACID guarantees in Delta Lake? ✅ **The transaction log.** Scenario flip: "A long-running query started before a big MERGE completed. What does the query see?" → its snapshot at start — old data, no errors, no blocking.""",
+        },
+        {
+            "title": "Concept 4 — MERGE INTO: upserts and CDC",
+            "section": "Data Ingestion and Loading (21%)",
+            "body": """**What it is:** `MERGE INTO` is *the* change-data pattern: match source rows to target rows on a key, then `WHEN MATCHED THEN UPDATE` / `WHEN NOT MATCHED THEN INSERT` (plus optional DELETE). It updates existing records and inserts new ones in a single statement — a true **upsert**, idempotent when keyed correctly. This is how silver tables stay "one row per business key" as CDC arrives.
+
+**Simple example**
+```sql
+MERGE INTO silver_customers t
+USING cdc_customers s ON t.customer_id = s.customer_id
+WHEN MATCHED THEN UPDATE SET *
+WHEN NOT MATCHED THEN INSERT *;
+```
+
+**How the exam asks it**
+> A nightly CDC file contains inserts and updates for existing rows. Which operation keeps the target correct in one statement? ✅ **`MERGE INTO`**. Traps: `INSERT INTO` (duplicates keys), `append` mode (same problem), `overwrite` (destroys untouched rows).""",
+        },
+        {
+            "title": "Concept 5 — Managed vs external tables",
+            "section": "Data Ingestion and Loading (21%)",
+            "body": """**What it is:** **managed table** — Databricks stores the data under the catalog's own storage; `DROP TABLE` deletes the metadata *and the data*. **external table** — the table points at data you control via an external location; `DROP` removes only the metadata, files stay. Managed = simplest lifecycle; external = when data must stay put (shared, produced elsewhere, compliance). Accessing external paths requires catalog-level **storage credentials / external locations** — another favorite exam detail.
+
+**Simple example**
+```sql
+CREATE TABLE orders;                                   -- managed
+CREATE TABLE orders_ext LOCATION 's3://bucket/path/';   -- external
+```
+
+**How the exam asks it**
+> An engineer runs `DROP TABLE` on an external table. What happens to the data? ✅ **Nothing — files remain; only the catalog metadata is removed.** Managed-table flip: both metadata and data are deleted.""",
+        },
+        {
+            "title": "Concept 6 — Schema enforcement and schema evolution",
+            "section": "Data Ingestion and Loading (21%)",
+            "body": """**What it is:** Delta **enforces** the table schema on write — a source file with an unexpected column *fails* rather than silently corrupting the table (a Parquet-append weakness the exam likes to contrast). But you can allow controlled change: `MERGE` / `write` with **`mergeSchema = true`** evolves the schema by adding new columns; `overwriteSchema` replaces it. Auto Loader similarly has `addNewColumns` / `rescue` options. Enforcement = safety by default; evolution = opt-in.
+
+**Simple example**
+```python
+df.write.option("mergeSchema", "true").mode("append").saveAsTable("orders")
+```
+
+**How the exam asks it**
+> A new column appears in source data; the pipeline should add it to the Delta table without failing. What should the engineer enable? ✅ **Schema evolution (`mergeSchema`)**. Default behavior if not enabled → the write **fails** (it does not silently drop or rename).""",
+        },
+        {
+            "title": "Concept 7 — Complex scenario: Auto Loader at scale (millions of files)",
+            "section": "Data Ingestion and Loading (21%)",
+            "body": """**Why it matters for the exam:** at millions of small files, COPY INTO tracking becomes the bottleneck and directory listing is slow. Auto Loader **file notification mode** subscribes to cloud events (queue + notification service) so new files *push* themselves in — no listing. The **checkpoint** records what was processed (exactly-once), and `trigger(availableNow=True)` drains the whole backlog in multiple batches **then stops** — ideal for cheap scheduled runs.
+
+**Worked example (scenario)**
+```python
+df = (spark.readStream.format("cloudFiles")
+      .option("cloudFiles.format", "json")
+      .option("cloudFiles.useNotifications", "true")
+      .schema(schema)
+      .load(path))
+(df.writeStream
+   .option("checkpointLocation", chk)
+   .trigger(availableNow=True)      # drain the backlog, then stop
+   .toTable("bronze.events"))
+```
+
+**How the exam asks it**
+> Several million small JSON files per day; nightly COPY INTO takes hours and does not keep up.
+
+✅ **Auto Loader with file notification mode, a persistent checkpoint, and schema evolution.** Traps: "increase the warehouse size running COPY INTO", "re-read the whole directory with INSERT OVERWRITE", "ask the source to consolidate files and keep COPY INTO".""",
+        },
+        {
+            "title": "Concept 8 — Complex scenario: schema evolution and the rescue column",
+            "section": "Data Ingestion and Loading (21%)",
+            "body": """**Why it matters for the exam:** schema changes are where streams die. `cloudFiles.schemaEvolutionMode = addNewColumns` (with a `schemaLocation` persisting the evolving schema) adds new columns without failing. When a **type** changes, `rescue` mode diverts mismatched rows into the **rescue column** (`_rescued_data`) instead of crashing — valid rows keep loading, bad rows are preserved for repair.
+
+**Worked example (scenario)**
+```python
+.option("cloudFiles.schemaLocation", chk_schema)
+.option("cloudFiles.schemaEvolutionMode", "rescue")
+.option("cloudFiles.rescueDataColumn", "_rescued_data")
+```
+
+**How the exam asks it**
+> Mid-week a source adds a column and the pipeline crashes; later a column's type changes from string to integer.
+
+✅ **addNewColumns with a schemaLocation for new columns; the rescue column captures type-mismatched rows without failing the stream.** Traps: "delete the checkpoint and relearn the schema" (reprocesses everything), "switch the source to CSV so columns are strings", "hardcode the original schema forever".""",
+        },
+        {
+            "title": "Concept 9 — Complex scenario: Auto CDC with deletes and full audit history",
+            "section": "Data Ingestion and Loading (21%)",
+            "body": """**Why it matters for the exam:** CDC feeds carry inserts, updates, **and deletes** (tombstones). Pipeline **Auto CDC** (`apply_changes`) needs **key columns** to match rows and a **sequence column** to order changes; deletes flow through automatically. Pick SCD Type 1 (latest state) or **SCD Type 2** when the scenario also demands audit history.
+
+**Worked example (scenario)**
+```python
+dlt.create_streaming_table("silver_customers")
+dlt.apply_changes(
+    target="silver_customers",
+    source="bronze_cdc_raw",
+    keys=["customer_id"],
+    sequence_by=F.col("_seq"),
+    stored_as_scd_type=2,       # keeps history for audit
+)
+```
+
+**How the exam asks it**
+> An operational database's CDC feed includes deletes; downstream analysts also need full change history for audit.
+
+✅ **Ingest with Auto Loader into a streaming table and apply changes with keys and sequence, stored as SCD Type 2.** Traps: "dropDuplicates on primary keys so only the newest row survives" (history gone), "load raw and let analysts interpret", "disable deletes".""",
+        },
+        {
+            "title": "Concept 10 — Complex scenario: watermarks, late data, and runaway state",
+            "section": "Data Ingestion and Loading (21%)",
+            "body": """**Why it matters for the exam:** event-time windows must tolerate **late data**, but without a bound the state store grows forever and the job slows. `withWatermark("event_time", "2 hours")` tells the engine: once a window is more than 2 hours past, close it and **evict its state**. One option answers both exam requirements — accept 2-hour-late events AND stop state growth.
+
+**Worked example (scenario)**
+```python
+(df.withWatermark("event_time", "2 hours")
+   .groupBy(F.window("event_time", "10 minutes"), "sensor_id")
+   .agg(F.avg("temp").alias("avg_temp")))
+```
+
+**How the exam asks it**
+> A streaming aggregation must accept events up to 2 hours late while the state store keeps growing and processing slows.
+
+✅ **Set a 2-hour watermark on event time so closed windows drop their state after the threshold.** Traps: "increase the checkpoint interval to 2 hours", "add executors so state fits in memory", "deduplicate late events on the driver with pandas".""",
+        },
+        {
+            "title": "Concept 11 — Complex scenario: full refresh vs incremental (and when COPY INTO still wins)",
+            "section": "Data Ingestion and Loading (21%)",
+            "body": """**Why it matters for the exam:** streaming tables only move **forward** — a refresh processes new files. If history was transformed wrongly, only a **full refresh** reprocesses everything with the fixed logic. And know when *not* to stream at all: a modest nightly file drop on a governed path that must re-run safely is still a **COPY INTO** job — it tracks loaded files in the Delta log and is idempotent.
+
+**Worked example (scenario)**
+```sql
+REFRESH TABLE bronze.events;      -- incremental: new files only
+-- a full refresh (pipeline UI/API) reprocesses ALL source files
+
+COPY INTO silver.ref_data
+FROM '/Volumes/main/landing/ref'
+FILEFORMAT = CSV
+COPY_OPTIONS ('mergeSchema' = 'true');
+```
+
+**How the exam asks it**
+> Months ago, two days of files were processed with a wrong transformation; what reprocesses them?
+
+✅ **A full refresh — reprocess the entire source with the fixed logic.** Same family: nightly partner files, idempotent reruns, modest volume → ✅ **COPY INTO**. Traps: "DELETE the rows and OPTIMIZE", "VACUUM the table", "drop and recreate the checkpoint".""",
+        },
+    ],
+    (
+        "associate",
+        "Working with Lakeflow Jobs (16%)",
+    ): [
+        {
+            "title": "Concept 1 — Jobs, tasks, and dependencies",
+            "section": "Working with Lakeflow Jobs (16%)",
+            "body": """**What it is:** a **job** is an orchestration unit made of **tasks** — each task runs one thing (a notebook, SQL query, pipeline, or script). **Dependencies** ("runs after") wire tasks into a DAG: B waits for A; tasks with no dependency run in **parallel**. Jobs give you retries, timeouts, notifications, and a run history — none of which you get from running a notebook manually.
+
+**Simple example:** Job `daily_sales`: task 1 `load_orders` → task 2 `build_silver` (depends on 1) → task 3 `refresh_dashboard` (depends on 2). Tasks 1 and a parallel `load_returns` run at the same time.
+
+**How the exam asks it**
+> A engineer must guarantee task B runs only after task A completes successfully. What should they configure? ✅ **A task dependency in the Lakeflow Job.** Trap: "sleep timer in the notebook" — brittle and not orchestration.""",
+        },
+        {
+            "title": "Concept 2 — Job clusters vs all-purpose clusters (the cost question)",
+            "section": "Working with Lakeflow Jobs (16%)",
+            "body": """**What it is:** jobs run on **job clusters** by default — created fresh for each run, used by that job only, and **auto-terminated** when it ends. That gives you isolation (no interference with interactive work), reproducibility (same clean environment), and cost efficiency (zero idle time). **All-purpose clusters** keep running between uses and can be shared interactively — great for people, wrong for schedules. The exam repeatedly asks "minimize cost / no lingering compute for a scheduled job" → job cluster.
+
+**Simple example:** nightly job with 20-minute runtime on job compute = 20 minutes billed, then it disappears. The same job on an all-purpose cluster left running overnight = hundreds of wasted hours.
+
+**How the exam asks it**
+> Which compute should a scheduled production job use to maximize isolation and avoid idle costs? ✅ **Job clusters.**""",
+        },
+        {
+            "title": "Concept 3 — Run-if conditions: branching on upstream results",
+            "section": "Working with Lakeflow Jobs (16%)",
+            "body": """**What it is:** every dependency has a **run-if** condition: `all_success` (default), `all_failed`, `none_failed`, `any_success`… The classic pattern: an alerting/cleanup task that must run **when something fails** — give it a dependency with run-if `all_failed` (or `any_failed`), and it executes exactly on failure paths. This is how you build error handling without external monitoring tools.
+
+**Simple example:** task `send_failure_email` depends on `load_orders` with **run-if: all_failed**. If the load succeeds, the email task is skipped; if it fails, the email fires.
+
+**How the exam asks it**
+> A job must send a notification only when an upstream task fails. Which configuration achieves this? ✅ **A downstream task with a run-if condition of `all_failed`/`any_failed`.**""",
+        },
+        {
+            "title": "Concept 4 — Triggers: schedules, file arrival, continuous",
+            "section": "Working with Lakeflow Jobs (16%)",
+            "body": """**What it is:** what *starts* a job. **Schedule (cron)** — e.g. every day 06:00, with timezone. **File arrival** — the job runs when new files land in a volume or cloud path (event-driven, no polling in your code). **Continuous** — the job restarts automatically whenever it ends (near-real-time processing pipelines). Also know table-update triggers for dependent jobs. Pick by *what* should cause the run — clock, data, or availability.
+
+**Simple example:** a partner drops a CSV into `/Volumes/.../landing` at unpredictable times → file-arrival trigger; a daily 6am report → cron `0 6 * * *`.
+
+**How the exam asks it**
+> A job should run whenever new data files arrive in cloud storage, with no fixed schedule. Which trigger type fits? ✅ **File arrival trigger.**""",
+        },
+        {
+            "title": "Concept 5 — Monitoring runs: retries, timeouts, notifications",
+            "section": "Working with Lakeflow Jobs (16%)",
+            "body": """**What it is:** production hygiene. Each task supports **retries** (max retries + wait interval — for transient failures like a flaky API), a **timeout** (kill the task if it exceeds a limit — protects the schedule from hung code), and job-level **email/webhook notifications** on start, success, or failure. The **run history** page shows every run, per-task state and durations — first stop when debugging "why did last night's run fail?".
+
+**Simple example:** `load_orders` occasionally dies on a transient network error → set max retries = 2, interval 5 minutes; add timeout 30 min so a hung load can't block the rest of the DAG.
+
+**How the exam asks it**
+> A task fails intermittently due to a temporary external API outage. What should be configured? ✅ **Automatic retries on the task.** Trap: "run the job again manually" — not an answer to an exam question about resilience.""",
+        },
+        {
+            "title": "Concept 6 — Complex scenario: repair runs — finish the job, keep the winners",
+            "section": "Working with Lakeflow Jobs (16%)",
+            "body": """**Why it matters for the exam:** when task 4 of 6 fails transiently, re-running everything re-pays for tasks 1–3. A **repair run** re-executes **only the failed task and the downstream tasks that were skipped**, keeping every successful upstream result. That is the answer whenever the scenario mentions expensive upstream tasks and a transient error.
+
+**Worked example (scenario)** in run history, the failed run offers **Repair run** — fix the issue (or nothing, for a cloud hiccup) and only tasks 4 → 5 → 6 re-execute, with no shared filesystem state needed because the outputs already sit in storage.
+
+**How the exam asks it**
+> Task 4 of a 6-task nightly job failed on a transient cloud error; tasks 1-3 are expensive and completed successfully.
+
+✅ **A repair run — retries task 4 and its downstream tasks, keeping 1–3 results.** Traps: "re-run the entire job", "create a new job with only tasks 4-6", "trigger a second concurrent run and cancel the slower one".""",
+        },
+        {
+            "title": "Concept 7 — Complex scenario: run-if conditions on multi-branch graphs",
+            "section": "Working with Lakeflow Jobs (16%)",
+            "body": """**Why it matters for the exam:** in fan-out graphs, the **run-if** condition on a downstream task decides when it fires: `all_success` (default — a parent failure *skips* the task), `at_least_one_success` (either parent), `all_done` (any outcome — cleanup). The exam pairs two parallel branches with a publish task: publish-if-either-succeeded is `at_least_one_success`; always-run-cleanup is `all_done`.
+
+**Worked example (scenario)** branch A (data checks) ∥ branch B (dim load) → task C (publish): set C to **At least one successful** so C runs when either branch lands and is skipped only when both fail.
+
+**How the exam asks it**
+> Task C must run if either parallel parent succeeds but never when both fail.
+
+✅ **At least one successful.** Traps: "All successful" (requires both parents), "All done" (runs even when both fail), "All failed" (fires only on double failure).""",
+        },
+        {
+            "title": "Concept 8 — Complex scenario: task values, for-each, and per-environment parameters",
+            "section": "Working with Lakeflow Jobs (16%)",
+            "body": """**Why it matters for the exam:** three wiring tools. **Task values** (`dbutils.jobs.taskValues.set/get`) pass runtime-computed values between tasks — the only mechanism for "task 1 computes a date and a downstream for-each task consumes it". **For-each tasks** iterate an inner task over an array (e.g., one run per region). **Job parameters** (read with `dbutils.widgets.get`) let one job serve dev and prod with different catalogs.
+
+**Worked example (scenario)**
+```python
+# task 1 (compute)                     # task 2 (for-each inner)
+dbutils.jobs.taskValues.set(           d = dbutils.jobs.taskValues.get(
+  key="run_date",                       taskKey="task_1",
+  value="2026-11-22")                   key="run_date")
+```
+
+**How the exam asks it**
+> Task 1 computes yesterday's partition date and must feed a for-each task that runs per region.
+
+✅ **taskValues.set() in task 1, referenced by the for-each input.** Traps: "embed the date in the cron expression", "hardcode the date in both tasks and update daily", "pass it via job tags".""",
+        },
+        {
+            "title": "Concept 9 — Complex scenario: concurrency, queueing, and alerting in production",
+            "section": "Working with Lakeflow Jobs (16%)",
+            "body": """**Why it matters for the exam:** production jobs need overlap and alerting settings. **Max concurrent runs** allows deliberate overlap; beyond the limit, new runs **queue** (FIFO) instead of piling up. **Notifications** on failure can target email, webhooks, or **system notification destinations (Slack/Teams)** — configured in job settings, never in code. For stable permissions across launchers, set the job's **run-as identity to a service principal**.
+
+**How the exam asks it**
+> A nightly job sometimes runs longer than 24 hours and overlapping runs are being dropped.
+
+✅ **Raise max concurrent runs so overlap is deliberate; excess runs queue.** Same family: Slack alert on every failed run → ✅ **a job failure notification using a webhook/notification destination**. Traps: "remove the schedule and trigger manually", "split into two nightly jobs", "reduce the timeout to kill long runs".""",
+        },
+    ],
+    (
+        "associate",
+        "Implementing CI/CD (10%)",
+    ): [
+        {
+            "title": "Concept 1 — Git folders (Repos): Git inside the workspace",
+            "section": "Implementing CI/CD (10%)",
+            "body": """**What it is:** a **Git folder** clones a remote repo straight into the workspace — notebooks and files, editable in the UI, with **commit, push, pull, branches, and pull requests** built in. Because notebooks are `.ipynb`, they diff cleanly. The flow the exam expects: work on a **branch**, commit and push, open a **pull request** for review, merge to main — never edit main directly. Each branch/repo checkout is its own file view, so devs don't collide.
+
+**Simple example:** clone `github.com/team/analytics` → create branch `feature/add-silver` → edit notebook → commit + push → open PR → teammate reviews → merge.
+
+**How the exam asks it**
+> Two engineers must change the same notebook without overwriting each other's work. What supports this? ✅ **Git branches via a Git folder** — isolate changes, merge through a pull request.""",
+        },
+        {
+            "title": "Concept 2 — Environments and the promotion flow (dev → prod)",
+            "section": "Implementing CI/CD (10%)",
+            "body": """**What it is:** CI/CD on Databricks means *code* travels through environments — dev → staging → prod — while each environment points at its own compute, data, and schedule. You develop in a dev branch/workspace, promote through PRs, and deploy to prod with a **Declarative Automation Bundle** — never by hand-editing the production job. The exam's core message: production changes must be **reviewed, versioned, reproducible**.
+
+**Simple example:** same MERGE logic, dev runs on `catalog_dev.silver.customers`, prod on `catalog.silver.customers` — only the *target config* differs, driven by bundle targets.
+
+**How the exam asks it**
+> What is the recommended way to move a notebook change into a production job? ✅ **Commit to Git, review via PR, deploy with a bundle.** Trap: "edit the production job's notebook directly" — no review, no version, exactly what CI/CD exists to prevent.""",
+        },
+        {
+            "title": "Concept 3 — Declarative Automation Bundles: infrastructure as code",
+            "section": "Implementing CI/CD (10%)",
+            "body": """**What it is:** a **Declarative Automation Bundle (DAB)** defines Databricks resources — jobs, pipelines, dashboards — as **YAML files in Git**. One bundle, multiple **targets**: `dev` and `prod` differ only in variables (cluster size, catalog, schedule). Deploy with `databricks bundle deploy --target prod`; validate with `bundle validate`. Because everything is a file, your whole pipeline is reviewable in a PR and deployable identically every time.
+
+**Simple example**
+```bash
+databricks bundle init          # scaffold project
+databricks bundle deploy --target dev
+# after PR review:
+databricks bundle deploy --target prod
+```
+
+**How the exam asks it**
+> A job must run a slightly different configuration in dev and prod, deployed consistently from source control. What should be used? ✅ **A Declarative Automation Bundle with environment targets.**""",
+        },
+        {
+            "title": "Concept 4 — Parameters and widgets: one notebook, many environments",
+            "section": "Implementing CI/CD (10%)",
+            "body": """**What it is:** CI/CD needs the *same* code to behave differently per environment. **Job parameters** pass values (table names, dates, environment names) into a notebook task; the notebook reads them with `dbutils.widgets.get(...)`. Default widget values appear in the job UI; parameters override them per run. This keeps notebooks identical across dev/prod — all differences live in the job/bundle configuration, not in code edits.
+
+**Simple example**
+```python
+catalog = dbutils.widgets.get("catalog")   # job passes: dev_catalog / prod_catalog
+orders = spark.table(f"{catalog}.silver.orders")
+```
+
+**How the exam asks it**
+> A notebook must write to a dev catalog in one job run and a prod catalog in another, without code changes. What achieves this? ✅ **Job parameters read via notebook widgets** (or bundle target variables). Trap: "two copies of the notebook" — drifts, unreviewable.""",
+        },
+        {
+            "title": "Concept 5 — Complex scenario: the bundle is the source of truth (UI edits get reverted)",
+            "section": "Implementing CI/CD (10%)",
+            "body": """**Why it matters for the exam:** a Declarative Automation Bundle is the **declarative source of truth** for its resources. UI edits to a bundle-deployed job are invisible to the bundle — the next `bundle deploy` **reverts them** to the bundle's definition. The process fix is always: change bundle-managed resources in the bundle (through Git + CI), never in the UI.
+
+**Worked example (scenario)** incident tuning in the UI lasted a week; the next deploy silently reverted it → move the tuning into the bundle YAML, open a PR, merge, deploy.
+
+**How the exam asks it**
+> A teammate tuned a bundle-deployed job in the UI; the next bundle deployment reverted the changes.
+
+✅ **All changes to bundle-managed resources live in the bundle via Git and CI — the single source of truth.** Traps: "deploy with --force so the bundle merges UI edits" (no such merge), "remove the job from the bundle and manage it in the UI", "disable deployments during incidents".""",
+        },
+        {
+            "title": "Concept 6 — Complex scenario: targets, variables, and run-as for dev and prod",
+            "section": "Implementing CI/CD (10%)",
+            "body": """**Why it matters for the exam:** one bundle, many environments. Declare a **variable** (e.g., `catalog`), give each **target** an override (`catalog_dev` / `catalog_prod`), reference it with `${var.catalog}`, and attach per-target settings such as `run_as` (a service principal in prod) and `permissions`. No code edits between environments — the core DAB answer.
+
+**Worked example (scenario)**
+```yaml
+variables:
+  catalog: { default: catalog_dev }
+targets:
+  dev:  { variables: { catalog: { default: catalog_dev } } }
+  prod: { variables: { catalog: { default: catalog_prod } } }
+```
+
+**How the exam asks it**
+> One pipeline definition must run against catalog_dev or catalog_prod depending on environment, and the prod job runs as a service principal.
+
+✅ **A bundle variable for the catalog with per-target overrides plus per-target permissions and run-as.** Traps: "two pipeline definitions edited by hand", "hardcode prod and rewrite for dev", "two separate bundles with changes copied by hand".""",
+        },
+        {
+            "title": "Concept 7 — Complex scenario: CI authentication — service principals over PATs",
+            "section": "Implementing CI/CD (10%)",
+            "body": """**Why it matters for the exam:** CI runners must authenticate non-interactively with **least privilege**. The pattern: create a **service principal**, grant it only the rights to deploy and manage the target resources, and store its **OAuth** credentials (DATABRICKS_HOST / DATABRICKS_CLIENT_ID / DATABRICKS_CLIENT_SECRET) as CI secrets (e.g., GitHub Actions secrets). A human's personal access token in the workflow is the classic wrong answer.
+
+**How the exam asks it**
+> GitHub Actions deploys the bundle on every merge to main; the workflow needs secure, least-privilege authentication to the workspace.
+
+✅ **A service principal with OAuth credentials stored as CI secrets and scoped deployment rights.** Traps: "the senior engineer's PAT in a GitHub secret", "workspace admin credentials for the runner", "a shared team username and password in the workflow file".""",
+        },
+    ],
+    (
+        "associate",
+        "Troubleshooting, Monitoring, and Optimization (10%)",
+    ): [
+        {
+            "title": "Concept 1 — The small-files problem and OPTIMIZE",
+            "section": "Troubleshooting, Monitoring, and Optimization (10%)",
+            "body": """**What it is:** streaming and frequent small writes create **thousands of tiny Parquet files** — each open, metadata entry, and listing slows reads massively. **`OPTIMIZE`** compacts them into larger files (bin-packing). For write-heavy Delta tables, schedule OPTIMIZE regularly. This is the default answer whenever the scenario says "table with many small files, queries slow".
+
+**Simple example**
+```sql
+OPTIMIZE bronze_events;                 -- compact now
+-- or regularly: a scheduled job running OPTIMIZE weekly
+```
+
+**How the exam asks it**
+> A streaming pipeline writes every 30 seconds; queries on the table are slower every day, and `DESCRIBE DETAIL` shows tens of thousands of files. What should the engineer do? ✅ **Run (or schedule) `OPTIMIZE`** to compact small files. Traps: "increase cluster size" (treats symptom), "rewrite the stream" (unnecessary).""",
+        },
+        {
+            "title": "Concept 2 — ZORDER and data skipping",
+            "section": "Troubleshooting, Monitoring, and Optimization (10%)",
+            "body": """**What it is:** Delta keeps **min/max statistics** per file for each column, so queries with filters can **skip whole files** that can't match ("data skipping"). **`ZORDER BY`** rewrites files so values of chosen columns are co-located — putting all of `user_id=42`'s rows into the same few files, making skipping far more effective. ZORDER the 1–3 columns you filter most; over-ZORDERing many columns dilutes the layout.
+
+**Simple example**
+```sql
+OPTIMIZE sales ZORDER BY (user_id, order_date);
+```
+
+**How the exam asks it**
+> Queries filter heavily on `user_id`; most scan the whole table anyway. Which maintenance step most improves this? ✅ **`OPTIMIZE … ZORDER BY (user_id)`** — improves data-skipping effectiveness for that column.""",
+        },
+        {
+            "title": "Concept 3 — VACUUM: reclaiming storage (and its time-travel cost)",
+            "section": "Troubleshooting, Monitoring, and Optimization (10%)",
+            "body": """**What it is:** every UPDATE/DELETE/MERGE leaves **old file versions** in storage — that's what time travel reads. **`VACUUM`** deletes files no longer needed by versions within the **retention period** (default **7 days**). It reclaims storage but **destroys time travel** older than the retention — the exam's trade-off question. Set retention deliberately: `VACUUM orders RETAIN 168 HOURS;` (7 days).
+
+**Simple example**
+```sql
+VACUUM orders;                 -- default 7-day retention
+VACUUM orders RETAIN 72 HOURS; -- keep only 3 days of history
+```
+
+**How the exam asks it**
+> Storage costs grow because of old table versions no one needs after 7 days. What reduces storage without losing recent time travel? ✅ **`VACUUM` with the 7-day retention.** Flip: "must keep 30 days of time travel" → *don't* vacuum below 30-day retention (raise it first).""",
+        },
+        {
+            "title": "Concept 4 — Reading the query profile (where slow actually is)",
+            "section": "Troubleshooting, Monitoring, and Optimization (10%)",
+            "body": """**What it is:** your debugging toolkit. The **query profile** (SQL) and **Spark UI** (notebook jobs) break execution into **stages**: per-stage duration, shuffle read/write, and **spill to disk** (data too big for memory — a red flag). Workflow: find the longest stage → is it shuffle-heavy (wide transformation/join/skew) or spilling (memory pressure) → fix accordingly (filter earlier, broadcast join, bigger cluster). `df.explain()` shows the logical/physical plan — which filters got pushed down, what joins exist.
+
+**Simple example:** profile shows stage 12 = 80% of runtime with huge *shuffle read* → the `groupBy`/`join` there is the problem, not the read.
+
+**How the exam asks it**
+> A query is slow. Which tool identifies which stage consumes the most time? ✅ **The query profile / Spark UI** — measure first, then optimize. Trap answers that jump straight to "add nodes" skip the diagnosis step the exam wants.""",
+        },
+        {
+            "title": "Concept 5 — Complex scenario: diagnosing the 199-and-1 straggler",
+            "section": "Troubleshooting, Monitoring, and Optimization (10%)",
+            "body": """**Why it matters for the exam:** reading the Spark UI is the skill. Open the slow **stage** → the tasks view shows per-task durations, shuffle read/write, and errors. The 199-fast-1-stuck pattern = **skew**: compare *shuffle read* per task — one task grabbing far more than the rest confirms it. Next stops: the driver logs (Logs tab) for errors, and the Jobs tab for what ran before/after.
+
+**Worked example (scenario)** stage 47: 199 tasks ≈ 2 min, one 40 min with 10x the shuffle read → inspect its keys → 70% of rows share one customer_id → filter/re-key that value and let AQE split the partition.
+
+**How the exam asks it**
+> Diagnose a job hanging at the same stage with almost no task progress.
+
+✅ **Check per-task durations and shuffle read in the stage's task list — a straggler with disproportionate shuffle read indicates skew on that key.** Traps: "the driver is busy printing results", "VACUUM is running", "the UI is sleeping".""",
+        },
+        {
+            "title": "Concept 6 — Complex scenario: driver OOM — collect() and toPandas() on big data",
+            "section": "Troubleshooting, Monitoring, and Optimization (10%)",
+            "body": """**Why it matters for the exam:** `collect()`, `.toPandas()`, and per-row loops pull data to the **driver** — a 40M-row `toPandas()` is a guaranteed OutOfMemoryError. The fix pattern: **aggregate or sample cluster-side first** and move only the small result, or use built-in charting (`display()`), which stays distributed.
+
+**Worked example (scenario)**
+```python
+# DON'T: df.toPandas() on 40M rows -> driver OOM
+# DO: summarize on the cluster, convert the small result
+summary = df.groupBy("region").agg(F.sum("amount").alias("total"))
+summary.toPandas()        # thousands of rows, not millions
+```
+
+**How the exam asks it**
+> A notebook calls .toPandas() on 40M rows for a quick chart and the driver crashes with OutOfMemoryError.
+
+✅ **Aggregate or sample on the cluster first and convert only the small summarized result.** Traps: "increase driver memory to 1 TB", "cache the DataFrame first so toPandas reads from cache", "convert the DataFrame to Scala".""",
+        },
+        {
+            "title": "Concept 7 — Complex scenario: the 400,000-file table — compaction and clustering",
+            "section": "Troubleshooting, Monitoring, and Optimization (10%)",
+            "body": """**Why it matters for the exam:** the small-files disease: hundreds of thousands of tiny files make every query list and open them all. `OPTIMIZE` **compacts** them; with **clustering** (`CLUSTER BY` / `ZORDER BY`) on the columns queries actually filter, file **statistics** let most files be skipped. `VACUUM` afterwards reclaims storage from removed versions — but VACUUM alone compacts nothing (classic trap).
+
+**Worked example (scenario)**
+```sql
+OPTIMIZE sales.orders
+  ZORDER BY (customer_id, order_date);  -- compact + co-locate keys
+VACUUM sales.orders RETAIN 168 HOURS;   -- reclaim obsolete files
+```
+
+**How the exam asks it**
+> A Delta table has about 400,000 small files; queries take minutes just to list files; analysts filter on customer_id and order_date.
+
+✅ **Run OPTIMIZE with clustering on the filter columns so compaction and file skipping return.** Traps: "VACUUM immediately", "restart the warehouse hourly", "move the table to CSV format".""",
+        },
+        {
+            "title": "Concept 8 — Complex scenario: unblocking a poisoned micro-batch",
+            "section": "Troubleshooting, Monitoring, and Optimization (10%)",
+            "body": """**Why it matters for the exam:** when a stream keeps failing the **same micro-batch** (the checkpoint is stuck), one input is poisoned. Recovery order: identify the bad record from the task error → **quarantine** it (move the file out of the source path, or let the rescue column capture it) → restart the query **from its checkpoint** so it advances past the batch. Deleting the checkpoint means reprocessing everything — the seductive wrong answer.
+
+**How the exam asks it**
+> A streaming job is stuck on the same micro-batch after one malformed file; valid data behind it is delayed.
+
+✅ **Quarantine the offending file and restart the query so the checkpoint advances past the failed batch.** Traps: "delete the checkpoint directory and restart" (reprocesses all data), "drop the target table and rebuild", "disable schema checking so bad files load as NULLs".""",
+        },
+        {
+            "title": "Concept 9 — Complex scenario: warehouse concurrency — scale out for dashboards",
+            "section": "Troubleshooting, Monitoring, and Optimization (10%)",
+            "body": """**Why it matters for the exam:** dashboard load is a **concurrency** problem, not a speed problem. A single warehouse cluster executes one group of queries at a time; 200 simultaneous users queue. The fix is **scaling out** — more clusters in the warehouse — which raises *parallel* query capacity. Scaling up (bigger nodes) makes each query faster but does not raise concurrency — exactly the distinction the exam tests.
+
+**How the exam asks it**
+> At 9 AM, 200 concurrent dashboard users overwhelm a single-cluster warehouse; queries queue for minutes.
+
+✅ **Increase the warehouse's cluster count so more queries execute in parallel.** Traps: "increase node size only, keeping queries sequential", "disable result caching", "move the dashboard to a job cluster that runs hourly".""",
+        },
+    ],
+    (
+        "associate",
+        "Governance and Security (15%)",
+    ): [
+        {
+            "title": "Concept 1 — The Unity Catalog model: one governance layer",
+            "section": "Governance and Security (15%)",
+            "body": """**What it is:** Unity Catalog (UC) governs all data across **every workspace** in the account. Structure: **catalog → schema → table / view / volume / function**. UC replaces the old per-workspace Hive metastore: one central place for permissions, lineage, and auditing — data in any workspace, same rules everywhere. Schemas usually group by team/domain or bronze/silver/gold.
+
+**Simple example:** `workspace.cert_prep.questions` reads as catalog `workspace`, schema `cert_prep`, table `questions` — you've used the full hierarchy in this app already.
+
+**How the exam asks it**
+> An organization has multiple workspaces and needs one consistent permission model over all data. What provides it? ✅ **Unity Catalog**. Trap: "the Hive metastore" — per-workspace, no central governance; that's exactly what UC fixed.""",
+        },
+        {
+            "title": "Concept 2 — The grant chain: USE CATALOG → USE SCHEMA → SELECT",
+            "section": "Governance and Security (15%)",
+            "body": """**What it is:** the #1 practical governance question. To read a table a principal needs **three** grants: `USE CATALOG` on the catalog (to traverse it), `USE SCHEMA` on the schema (to see inside it), and `SELECT` on the table itself. Miss any one → "not found / permission denied", even if SELECT exists. Grant via SQL:
+
+**Simple example**
+```sql
+GRANT USE CATALOG ON CATALOG workspace TO `group Analysts`;
+GRANT USE SCHEMA ON SCHEMA workspace.cert_prep TO `group Analysts`;
+GRANT SELECT ON TABLE workspace.cert_prep.questions TO `group Analysts`;
+```
+
+**How the exam asks it**
+> A user has `SELECT` on a table but cannot query it. What is missing? ✅ **`USE CATALOG` and/or `USE SCHEMA` grants on the parent objects.** The exam loves this "has SELECT but still blocked" scenario.""",
+        },
+        {
+            "title": "Concept 3 — Principals, ownership, and sharing with groups",
+            "section": "Governance and Security (15%)",
+            "body": """**What it is:** three principal types: **users**, **groups**, and **service principals** (non-human identities for jobs and apps). Every UC object has an **owner** with full control of it (including the right to grant further). Best practice the exam tests: assign permissions to **groups**, never individual users — one grant covers onboarding/offboarding for whole teams. Service principals own production pipelines so they don't depend on any employee's account.
+
+**Simple example:** new analyst joins → admin adds them to `group Analysts` → they instantly inherit every grant the group has. Done.
+
+**How the exam asks it**
+> Permissions must apply to a whole team and survive members joining and leaving. What should grants be assigned to? ✅ **A group.** Trap: "each user individually" — an admin nightmare the exam marks wrong.""",
+        },
+        {
+            "title": "Concept 4 — Lineage and audit: provenance for free",
+            "section": "Governance and Security (15%)",
+            "body": """**What it is:** UC **captures lineage automatically** — which tables/queries/jobs produced or consumed which data — no setup. Impact analysis ("if I change this column, what breaks?") becomes a look at the lineage graph. **Audit logs / system tables** record who accessed what, when. Together they answer the two governance questions auditors always ask: *where did this data come from?* and *who touched it?*
+
+**Simple example:** open a table in Catalog Explorer → Lineage tab → upstream tables and downstream dashboards/jobs appear as a graph.
+
+**How the exam asks it**
+> Before changing a table's schema, an engineer wants to know every downstream consumer. What provides this with no extra tooling? ✅ **Unity Catalog lineage.**""",
+        },
+        {
+            "title": "Concept 5 — Hive metastore vs Unity Catalog (why UC won)",
+            "section": "Governance and Security (15%)",
+            "body": """**What it is:** the legacy world: each workspace had its **own** Hive metastore — data and permissions trapped per workspace, no shared view, no central audit. **Unity Catalog** fixes all of it: account-level, all workspaces see the same catalogs, one permission model, built-in lineage/audit, and finer objects (volumes, functions). This contrast *is* the exam question.
+
+**Simple example:** with a Hive metastore, `GRANT SELECT` had to be repeated in *every* workspace needing the table; with UC, one grant on `catalog.schema.table` applies everywhere.
+
+**How the exam asks it**
+> What limitation of legacy Hive metastores does Unity Catalog address? ✅ **Per-workspace isolation of data and permissions — UC centralizes governance across all workspaces.**""",
+        },
+        {
+            "title": "Concept 6 — Complex scenario: row filters and column masks in production",
+            "section": "Governance and Security (15%)",
+            "body": """**Why it matters for the exam:** the two fine-grained security tools, both attached to the **table** so they apply no matter how the query arrives (SQL, notebook, dashboard). A **row filter** is a function returning a boolean per row (e.g., region must match the user's group). A **column mask** rewrites a column's value per user (e.g., salary → NULL outside hr_comp). One table serves everyone; copies-per-team and "trust users to filter" are the traps.
+
+**Worked example (scenario)**
+```sql
+CREATE OR REPLACE FUNCTION main.sec.region_filter(region STRING)
+RETURNS BOOLEAN
+RETURN is_account_group_member(CONCAT('region_', region));
+
+ALTER TABLE main.gold.customers SET ROW FILTER
+  main.sec.region_filter ON (region);
+```
+
+**How the exam asks it**
+> Analysts in five regions query one governed table but may only see their own region.
+
+✅ **A row filter function on the table filtering rows by the querying user's group.** Same family: compensation visible only to the hr_comp group → ✅ **a column mask returning the real value for members and NULL for everyone else**.""",
+        },
+        {
+            "title": "Concept 7 — Complex scenario: least privilege and evidence for auditors",
+            "section": "Governance and Security (15%)",
+            "body": """**Why it matters for the exam:** two production patterns. *Team isolation in a shared catalog:* grant USE plus object-level grants **only on each team's schemas** — never catalog-wide SELECT that leaks finance data. *Evidence for auditors:* Unity Catalog records every access and grant in **system tables** (`system.access.audit`) — queryable, timestamped, and the authoritative answer for "who saw what in the last 90 days".
+
+**Worked example (scenario)**
+```sql
+GRANT USE CATALOG ON CATALOG company_data TO `team_a`;
+GRANT USE SCHEMA, SELECT ON SCHEMA company_data.team_a_assets TO `team_a`;
+
+-- evidence for the auditor
+SELECT event_time, user_identity, action_name
+FROM system.access.audit
+WHERE service_name = 'UnityCatalog';
+```
+
+**How the exam asks it**
+> Two teams share a catalog; team B must never browse team A's finance schemas.
+
+✅ **Per-schema grants (USE + SELECT on their own schemas) with no broad catalog-level grants.** Same family: auditor wants 90 days of evidence → ✅ **Unity Catalog audit events in system tables**. Traps: screenshots of the permissions UI, a shared spreadsheet of grants, job run history.""",
+        },
+        {
+            "title": "Concept 8 — Complex scenario: sharing data without shipping it (Delta Sharing)",
+            "section": "Governance and Security (15%)",
+            "body": """**Why it matters for the exam:** share live data **without copies**: a **share** (a list of tables) is granted to a **recipient**; they query it with their own compute through a governed endpoint, and revoking the recipient cuts access **instantly**. It is read-only by design. Nightly exports, partner workspace accounts, and VPN mounts are the trap answers whenever policy says "no copies" or "instantly revocable".
+
+**Worked example (scenario)**
+```sql
+CREATE SHARE partner_analytics;
+ALTER SHARE partner_analytics ADD TABLE gold.orders;
+CREATE RECIPIENT partner_acme;           -- gets a token to query with
+GRANT SELECT ON SHARE partner_analytics TO RECIPIENT partner_acme;
+-- revoke = instant cutoff, no data to recall
+```
+
+**How the exam asks it**
+> A partner must analyze 12 of your Delta tables; copying data is forbidden and access must be revocable immediately.
+
+✅ **A Delta Sharing share with those tables and a recipient whose access revokes instantly.** Traps: "nightly export to the partner's bucket", "give partner users workspace accounts with SELECT", "read-only DBFS mounts over VPN".""",
+        },
+        {
+            "title": "Concept 9 — Complex scenario: lineage for impact analysis and identity-proof pipelines",
+            "section": "Governance and Security (15%)",
+            "body": """**Why it matters for the exam:** two "who depends on this / who runs this" scenarios. *Impact analysis:* before renaming `cust_id`, **column-level lineage** lists every downstream table, view, and query touching it — SHOW GRANTS lists principals, not dependents. *Identity-proof pipelines:* run jobs as a **service principal** with transferred ownership, so a departed employee's revoked permissions cannot break nightly loads.
+
+**How the exam asks it**
+> Before renaming cust_id to customer_id, the team needs every dependent object.
+
+✅ **Column-level lineage.** Same family: a nightly job's owner is leaving and their permissions will be revoked → ✅ **recreate the job under a service principal and transfer table ownership and grants to it**. Traps: "ask the employee for a long-lived token", "store their PAT in a secret scope", "rebuild every table nightly to reset ownership".""",
+        },
+    ],
+}
+
+
+# Official exam sections ("The exam covers") parsed from the guide concepts.
+SECTIONS = {
+    lvl: [ln[5:].strip() for ln in CONCEPTS[lvl].splitlines() if ln.startswith("#### ")]
+    for lvl in CONCEPTS
+}
+
+# Official exam weightings parsed from the domain labels, used to weight mock
+# exam results like the real exam does.
+OFFICIAL_WEIGHTS = {
+    lbl: int(lbl.split("(")[-1].split("%")[0])
+    for doms in SECTIONS.values()
+    for lbl in doms
+}
+
+
+def _short_title(text):
+    """Derive a short concept title from a guide bullet."""
+    cut = text.split(":")[0].split(" — ")[0].split(" (`")[0]
+    return cut if 3 <= len(cut) <= 60 else (text[:57] + "…")
+
+
+def get_concepts(level, domain):
+    """Concept list for a cert level + domain. Detailed lessons override the
+    guide bullets; everything else falls back to the guide concepts."""
+    level = level or "associate"
+    if domain in (None, "All"):
+        if level in LESSONS_BY_LEVEL:
+            doms = SECTIONS.get(level, [])
+            out = []
+            for d in doms:
+                out.extend(get_concepts(level, d))
+            return out
+        domain = "All"
+    if (level, domain) in LESSONS:
+        return LESSONS[(level, domain)]
+    out = []
+    current = None
+    for ln in CONCEPTS[level].splitlines():
+        if ln.startswith("#### "):
+            current = ln[5:].strip()
+        elif ln.startswith("* ") and current is not None and domain in ("All", current):
+            text = ln[2:].strip()
+            out.append({"title": _short_title(text), "section": current, "body": text})
+    if not out:
+        out = [{"title": domain, "section": domain,
+               "body": "Detailed lessons for this domain are coming soon."}]
+    return out
+
+
+LESSONS_BY_LEVEL = {lvl for (lvl, _d) in LESSONS}
+
+
+def build_prep_guide(level):
+    """Assemble the full AI Prep Guide page for a certification level."""
+    label = next(l["label"] for l in LEVELS if l["value"] == level)
+    return "\n".join(
+        [
+            "# AI Prep Guide — Databricks Certification",
+            "",
+            "Any AI tool you already use. Any Databricks exam. The steps below "
+            "are the official guide, with **Steps 2–5 executed for "
+            + label
+            + "**.",
+            "",
+            "## Step 1 — Set up",
+            "",
+            STEP1,
+            "",
+            "## Step 2 — Prime your AI (paste this every session)",
+            "",
+            "> " + PRIME_PROMPT,
+            "",
+            "## Step 3 — Find your exam's \"renamed product\" traps (5 minutes, once)",
+            "",
+            STEP3,
+            "",
+            "## Step 4 — Run this 5-step loop, one section at a time",
+            "",
+            STEP4_LOOP,
+            CONCEPTS[level],
+            "",
+            "## Step 5 — Hands-on minimum (CRITICAL)",
+            "",
+            HANDSON[level],
+            "",
+            "## Step 6 — Suggested pace",
+            "",
+            PACE,
+        ]
+    )
+
+
+# ------------------------------------------------------------------ layout
+app = Dash(__name__, title="Databricks Cert Prep", update_title=None)
+server = app.server
+
+# Inject the stylesheet through the page template (dash.html has no Style
+# component in the installed Dash version).
+app.index_string = (
+    "<!DOCTYPE html>\n<html>\n<head>\n{%metas%}\n<title>{%title%}</title>\n"
+    "{%favicon%}\n<style>\n" + CSS + "\n</style>\n{%css%}\n</head>\n"
+    "<body>\n{%app_entry%}\n{%config%}\n{%scripts%}\n{%renderer%}\n</body>\n</html>"
+)
+
+bank = get_bank()
+n_assoc = sum(1 for q in bank["questions"] if q["cert_level"] == "associate")
+n_prof = sum(1 for q in bank["questions"] if q["cert_level"] == "professional")
+BANK_INFO = (
+    f"Question bank: {n_assoc} Associate · {n_prof} Professional questions "
+    f"({len(bank['flashcards'])} flashcards) — loaded from Unity Catalog"
+    if not bank["error"]
+    else f"⚠ Could not load the question bank from Unity Catalog: {bank['error']}"
+)
+
+app.layout = html.Div(
+    [
+        html.Div(
+            [
+                html.H1("Databricks Cert Prep"),
+                html.P(
+                    "Train for the Databricks Data Engineer Associate & "
+                    "Professional certifications — learn, practice under real "
+                    "exam conditions, and review every answer."
+                ),
+            ],
+            className="hdr",
+        ),
+        html.Div(
+            [
+                dcc.Tabs(
+                    id="tabs",
+                    value="learn",
+                    children=[
+                        dcc.Tab(label="📚 Learn", value="learn"),
+                        dcc.Tab(label="⏱️ Practice Exams", value="exam"),
+                        dcc.Tab(label="💡 Tips & Tricks", value="tips"),
+                    ],
+                    colors={
+                        "border": "#d5dbe4",
+                        "primary": "#1a73ba",
+                        "background": "#f2f4f7",
+                    },
+                ),
+                # ------------------------------------------------ LEARN
+                html.Div(
+                    [
+                        dcc.Store(id="learn-state", data={"idx": 0}),
+                        html.Div(
+                            [
+                                html.Div(
+                                    [
+                                        html.Label("Certification"),
+                                        dcc.Dropdown(
+                                            id="learn-level",
+                                            options=LEVELS,
+                                            value="associate",
+                                            clearable=False,
+                                        ),
+                                    ],
+                                    className="field",
+                                ),
+                                html.Div(
+                                    [
+                                        html.Label("Domain"),
+                                        dcc.Dropdown(
+                                            id="learn-domain",
+                                            options=["All"],
+                                            value="All",
+                                            clearable=False,
+                                        ),
+                                    ],
+                                    className="field",
+                                ),
+                                html.Button(
+                                    "↻ Reload question bank", id="learn-refresh"
+                                ),
+                            ],
+                            className="controls",
+                        ),
+                        html.P(
+                            [
+                                html.B("Getting ready: "),
+                                html.A(
+                                    "Data Engineer Associate page",
+                                    href="https://www.databricks.com/learn/certification/data-engineer-associate",
+                                    target="_blank",
+                                ),
+                                " · ",
+                                html.A(
+                                    "Data Engineer Professional page",
+                                    href="https://www.databricks.com/learn/certification/data-engineer-professional",
+                                    target="_blank",
+                                ),
+                                " · ",
+                                html.A(
+                                    "AI Prep Guide",
+                                    href="https://www.databricks.com/sites/default/files/2026-06/ai-prep-guide-any-databricks-certification.pdf",
+                                    target="_blank",
+                                ),
+                                " — domain lists mirror the official “The exam covers” "
+                                "sections, with real weightings.",
+                            ],
+                            className="muted",
+                        ),
+                        html.Div(id="learn-concept"),
+                        html.Div(
+                            [
+                                html.Button("‹ Prev", id="learn-prev"),
+                                html.Button(
+                                    "Next concept ›",
+                                    id="learn-next",
+                                    className="btn-primary",
+                                ),
+                                html.Span(
+                                    "",
+                                    id="learn-progress",
+                                    className="muted",
+                                    style={"marginLeft": "16px"},
+                                ),
+                            ],
+                            style={
+                                "display": "flex",
+                                "gap": "10px",
+                                "alignItems": "center",
+                                "marginTop": "18px",
+                            },
+                        ),
+                        html.Details(
+                            [
+                                html.Summary(
+                                    "📘 Full AI Prep Guide — all steps and sections"
+                                ),
+                                html.Div(id="learn-guide", style={"marginTop": "12px"}),
+                            ],
+                            style={"marginTop": "24px"},
+                        ),
+                    ],
+                    id="tab-learn",
+                    className="panel",
+                ),
+                # ------------------------------------------- PRACTICE EXAMS
+                html.Div(
+                    [
+                        dcc.Store(id="exam-state"),
+                        dcc.Store(id="exam-result"),
+                        dcc.Store(id="exam-mode", data="setup"),
+                        dcc.Interval(
+                            id="exam-tick", interval=1000, disabled=True
+                        ),
+                        # setup view
+                        html.Div(
+                            id="view-setup",
+                            children=[
+                                html.H3("Set up your mock exam"),
+                                html.P(
+                                    "The real exams give you roughly two minutes "
+                                    "per question (e.g. 45 questions / 90 minutes "
+                                    "at Associate level) and require 70% to pass — "
+                                    "check the official exam page for current details. "
+                                    "Defaults here mirror that pacing."
+                                ),
+                                html.Div(
+                                    [
+                                        html.Div(
+                                            [
+                                                html.Label("Certification"),
+                                                dcc.Dropdown(
+                                                    id="exam-level",
+                                                    options=LEVELS,
+                                                    value="associate",
+                                                    clearable=False,
+                                                ),
+                                            ],
+                                            className="field",
+                                        ),
+                                        html.Div(
+                                            [
+                                                html.Label("Domain"),
+                                                dcc.Dropdown(
+                                                    id="exam-domain",
+                                                    options=["All domains"],
+                                                    value="All domains",
+                                                    clearable=False,
+                                                ),
+                                            ],
+                                            className="field",
+                                        ),
+                                        html.Div(
+                                            [
+                                                html.Label("Difficulty"),
+                                                dcc.Dropdown(
+                                                    id="exam-difficulty",
+                                                    options=[
+                                                        "All",
+                                                        "easy",
+                                                        "medium",
+                                                        "complex",
+                                                    ],
+                                                    value="All",
+                                                    clearable=False,
+                                                ),
+                                            ],
+                                            className="field",
+                                        ),
+                                        html.Div(
+                                            [
+                                                html.Label("Set"),
+                                                dcc.Dropdown(
+                                                    id="exam-set",
+                                                    options=["All sets"],
+                                                    value="All sets",
+                                                    clearable=False,
+                                                ),
+                                            ],
+                                            className="field",
+                                        ),
+                                        html.Div(
+                                            [
+                                                html.Label("Questions"),
+                                                dcc.Input(
+                                                    id="exam-num",
+                                                    type="number",
+                                                    min=5,
+                                                    step=1,
+                                                    value=20,
+                                                    style={"padding": "8px", "borderRadius": "8px", "border": "1px solid #d5dbe4"},
+                                                ),
+                                            ],
+                                            className="field",
+                                        ),
+                                        html.Div(
+                                            [
+                                                html.Label("Minutes"),
+                                                dcc.Input(
+                                                    id="exam-mins",
+                                                    type="number",
+                                                    min=5,
+                                                    step=5,
+                                                    value=60,
+                                                    style={"padding": "8px", "borderRadius": "8px", "border": "1px solid #d5dbe4"},
+                                                ),
+                                            ],
+                                            className="field",
+                                        ),
+                                        html.Button(
+                                            "▶ Start exam",
+                                            id="exam-start",
+                                            className="btn-accent",
+                                        ),
+                                    ],
+                                    className="controls",
+                                ),
+                                html.P("", id="exam-hint", className="muted"),
+                                html.P(BANK_INFO, className="muted"),
+                                html.Hr(),
+                                html.Details(
+                                    [
+                                        html.Summary(
+                                            "📥 Upload questions from a PDF or Word document"
+                                        ),
+                                        html.P(
+                                            "Parse a practice-exam document with AI and add its "
+                                            "questions to the bank. Pick the level, domain, and "
+                                            "difficulty to label the imported questions, then upload "
+                                            "the file. Parsed questions are tagged with the file name "
+                                            "as their set, so you can filter exams to just that set.",
+                                            className="muted",
+                                        ),
+                                        html.Div(
+                                            [
+                                                html.Div(
+                                                    [
+                                                        html.Label("Certification"),
+                                                        dcc.Dropdown(
+                                                            id="upload-level",
+                                                            options=LEVELS,
+                                                            value="associate",
+                                                            clearable=False,
+                                                        ),
+                                                    ],
+                                                    className="field",
+                                                ),
+                                                html.Div(
+                                                    [
+                                                        html.Label("Domain"),
+                                                        dcc.Dropdown(
+                                                            id="upload-domain",
+                                                            options=SECTIONS.get("associate", []),
+                                                            value=(
+                                                                SECTIONS.get("associate", [""])[0]
+                                                            ),
+                                                            clearable=False,
+                                                        ),
+                                                    ],
+                                                    className="field",
+                                                ),
+                                                html.Div(
+                                                    [
+                                                        html.Label("Difficulty"),
+                                                        dcc.Dropdown(
+                                                            id="upload-difficulty",
+                                                            options=["easy", "medium", "complex"],
+                                                            value="medium",
+                                                            clearable=False,
+                                                        ),
+                                                    ],
+                                                    className="field",
+                                                ),
+                                            ],
+                                            className="controls",
+                                        ),
+                                        dcc.Upload(
+                                            id="upload-questions-file",
+                                            children=html.Div(
+                                                [
+                                                    "Drag & drop or ",
+                                                    html.A("select a PDF or Word file"),
+                                                    " — parsed questions are added to the bank "
+                                                    "(parsing can take a minute or two)",
+                                                ]
+                                            ),
+                                            accept=".pdf,.docx,.doc",
+                                            multiple=False,
+                                            className="upload-zone",
+                                            style={"marginTop": "12px"},
+                                        ),
+                                        html.Div(id="upload-status", className="upload-status"),
+                                    ],
+                                    style={"marginTop": "18px"},
+                                ),
+                            ],
+                        ),
+                        # running view
+                        html.Div(
+                            id="view-running",
+                            style={"display": "none"},
+                            children=[
+                                html.Div(
+                                    [
+                                        html.Div(
+                                            [html.Span("⏱ ", style={"fontSize": "20px"}), html.Span("--:--", id="exam-timer", className="timer")]
+                                        ),
+                                        html.Span(id="exam-progress", className="muted"),
+                                    ],
+                                    className="exam-top",
+                                ),
+                                html.Div(id="exam-qnum"),
+                                html.Div(id="exam-question", className="q-text"),
+                                dcc.RadioItems(
+                                    id="exam-options",
+                                    options=[],
+                                    labelStyle={
+                                        "display": "block",
+                                        "padding": "8px 10px",
+                                        "borderRadius": "8px",
+                                        "cursor": "pointer",
+                                    },
+                                ),
+                                html.Div(
+                                    [
+                                        html.Button("‹ Prev", id="exam-prev"),
+                                        html.Button("Next ›", id="exam-next"),
+                                        html.Button(
+                                            "Submit exam",
+                                            id="exam-submit",
+                                            className="btn-accent",
+                                        ),
+                                    ],
+                                    style={"display": "flex", "gap": "10px", "marginTop": "18px"},
+                                ),
+                                html.Div(id="exam-nav", className="q-grid"),
+                            ],
+                        ),
+                        # results view
+                        html.Div(
+                            id="view-results",
+                            style={"display": "none"},
+                            children=[
+                                html.Div(id="exam-scorecard"),
+                                html.Div(id="exam-domains"),
+                                html.H3("Answer review"),
+                                html.Div(id="exam-review"),
+                                html.Div(
+                                    [
+                                        html.Button(
+                                            "↺ Retake / new exam",
+                                            id="exam-retake",
+                                            className="btn-primary",
+                                        )
+                                    ],
+                                    style={"marginTop": "18px"},
+                                ),
+                            ],
+                        ),
+                    ],
+                    id="tab-exam",
+                    className="panel",
+                ),
+                # ------------------------------------------------ TIPS
+                html.Div(
+                    [
+                        html.H2("Exam strategy & common pitfalls", className="tips"),
+                        dcc.Markdown(
+                            """
+#### Pacing and triage
+* The pass bar is **70%** — you don't need a perfect score, you need broad coverage. Never leave a question blank; there is no negative marking.
+* Do **three passes**: first answer everything you know fast (~1 min/question), flag the slow ones, then return. Reserve the final minutes to review flagged questions.
+* Questions are scenario-based. Read the *last sentence* first (the actual ask), then the scenario. Many answers describe real techniques that are still *not what was asked*.
+
+#### Answer-selection heuristics
+* Prefer the **Databricks-recommended best practice**: Unity Catalog governance, managed tables, Delta Lake, built-in functions over UDFs, declarative pipelines over hand-coded orchestration, SQL/declarative over imperative loops.
+* Watch for absolutes ("always", "never", "only") — they are usually wrong.
+* If two options look similar, look for the keyword difference (e.g. *compaction* vs *retention*, *bronze* vs *silver*). The exam loves adjacent concepts.
+
+#### Domain pitfalls to memorize
+* **Delta Lake**: `OPTIMIZE` compacts small files; `VACUUM` removes files past retention. Time travel (`VERSION AS OF`) reads history; `RESTORE TABLE` reverts. Deletion vectors speed DML, not reads.
+* **Streaming**: watermarks bound late data and evict state; `availableNow=True` = process everything then stop; checkpoint location = resumability + effectively-once semantics into Delta.
+* **Pipelines (SDP)**: `expect` keeps bad records and reports metrics, `expect_or_drop` removes them; streaming tables are incremental, materialized views are fully recomputed.
+* **Unity Catalog**: grants chain USE CATALOG → USE SCHEMA → SELECT; managed tables delete data on DROP, external tables keep it; lineage is automatic.
+* **Performance**: AQE re-optimizes at runtime; broadcast small dimension tables; skew → AQE skew handling / salting; cache only what you reuse.
+* **PySpark**: lazy evaluation; narrow vs wide transformations; built-ins beat Python UDFs.
+"""
+                        ),
+                        html.H3("How to study", className="tips"),
+                        dcc.Markdown(
+                            """
+1. **Get hands-on.** These exams test applied scenarios, not definitions. Reproduce every concept in a notebook — MERGE, time travel, watermarks, expectations, grants.
+2. **Use the Learn tab daily** (spaced repetition beats cramming) and take a **timed mock exam every few days**. Review every wrong answer's explanation — that's where the learning happens.
+3. **Chase your weakest domain.** The results screen ranks domains by accuracy; spend your next study session on the bottom of that list.
+4. **Skim the official docs for each domain** — Databricks exams are closely aligned with current documented best practice.
+5. **Use the official AI Prep Guide** to build your personalized prep plan (linked in the Learn tab).
+
+**Official resources**
+- [AI Prep Guide (any Databricks certification)](https://www.databricks.com/sites/default/files/2026-06/ai-prep-guide-any-databricks-certification.pdf)
+- [Data Engineer Associate certification page](https://www.databricks.com/learn/certification/data-engineer-associate)
+- [Data Engineer Professional certification page](https://www.databricks.com/learn/certification/data-engineer-professional)
+- [Databricks documentation](https://docs.databricks.com)
+"""
+                        ),
+                    ],
+                    id="tab-tips",
+                    className="panel tips",
+                ),
+            ],
+            className="container",
+        ),
+    ]
+)
+
+
+# --------------------------------------------------------------- helpers
+def fmt_secs(sec):
+    sec = max(0, int(sec))
+    return f"{sec // 60:02d}:{sec % 60:02d}"
+
+
+def compute_results(state):
+    by_id = {q["id"]: q for q in get_bank()["questions"]}
+    details, domains = [], {}
+    correct = 0
+    for qid in state["qids"]:
+        q = by_id[qid]
+        ans = state["answers"].get(str(qid))
+        ok = ans is not None and ans == q["correct_index"]
+        correct += int(ok)
+        agg = domains.setdefault(q["domain"], [0, 0])
+        agg[0] += int(ok)
+        agg[1] += 1
+        details.append(
+            {
+                "domain": q["domain"],
+                "question": q["question"],
+                "options": q["options"],
+                "your": ans,
+                "correct": q["correct_index"],
+                "ok": ok,
+                "explanation": q["explanation"],
+            }
+        )
+    total = len(state["qids"])
+    score = round(100.0 * correct / total, 1) if total else 0.0
+    return {
+        "level": state["level"],
+        "score": score,
+        "correct": correct,
+        "total": total,
+        "passed": score >= PASS_PCT,
+        "domains": domains,
+        "details": details,
+        "started": state.get("started"),
+        "duration_sec": int(time.time() - state.get("started_epoch", time.time())),
+    }
+
+
+def save_attempt(state, result):
+    """Persist the attempt to workspace.cert_prep.attempts (best effort)."""
+    try:
+        from pyspark.sql.types import (
+            BooleanType,
+            DoubleType,
+            IntegerType,
+            StringType,
+            StructField,
+            StructType,
+            TimestampType,
+        )
+
+        started = datetime.fromisoformat(state["started"])
+        submitted = datetime.now(timezone.utc)
+        schema = StructType(
+            [
+                StructField("attempt_id", StringType()),
+                StructField("user_email", StringType()),
+                StructField("cert_level", StringType()),
+                StructField("started_ts", TimestampType()),
+                StructField("submitted_ts", TimestampType()),
+                StructField("duration_sec", IntegerType()),
+                StructField("total_questions", IntegerType()),
+                StructField("correct_count", IntegerType()),
+                StructField("score_pct", DoubleType()),
+                StructField("passed", BooleanType()),
+                StructField("details", StringType()),
+            ]
+        )
+        row = (
+            str(uuid.uuid4()),
+            current_user_email(),
+            state["level"],
+            started,
+            submitted,
+            result["duration_sec"],
+            result["total"],
+            result["correct"],
+            result["score"],
+            result["passed"],
+            json.dumps(result["details"]),
+        )
+        get_spark().createDataFrame([row], schema).write.mode("append").saveAsTable(
+            ATTEMPTS_TABLE
+        )
+        log.info("Saved exam attempt to %s", ATTEMPTS_TABLE)
+    except Exception:
+        log.exception("Failed to save exam attempt")
+
+
+# ------------------------------------------------------- tab switching
+@app.callback(
+    Output("tab-learn", "style"),
+    Output("tab-exam", "style"),
+    Output("tab-tips", "style"),
+    Input("tabs", "value"),
+)
+def switch_tab(tab):
+    show, hide = {"display": "block"}, {"display": "none"}
+    return (
+        show if tab == "learn" else hide,
+        show if tab == "exam" else hide,
+        show if tab == "tips" else hide,
+    )
+
+
+# ------------------------------------------------------------------ LEARN
+@app.callback(
+    Output("learn-domain", "options"),
+    Output("learn-domain", "value"),
+    Input("learn-level", "value"),
+    Input("learn-refresh", "n_clicks"),
+    State("learn-domain", "value"),
+)
+def learn_domain_options(level, _refresh, current):
+    if ctx.triggered_id == "learn-refresh":
+        get_bank(force=True)  # pick up newly added exam questions
+    doms = SECTIONS.get(level or "associate", [])
+    opts = ["All"] + doms
+    return opts, current if current in opts else opts[0]
+
+
+@app.callback(
+    Output("learn-state", "data"),
+    Input("learn-level", "value"),
+    Input("learn-domain", "value"),
+    Input("learn-prev", "n_clicks"),
+    Input("learn-next", "n_clicks"),
+    State("learn-state", "data"),
+)
+def learn_mutate(level, domain, _prev, _next, state):
+    tid = ctx.triggered_id
+    if tid in ("learn-level", "learn-domain"):
+        return {"idx": 0}
+    state = state or {"idx": 0}
+    total = len(get_concepts(level, domain))
+    idx = int(state.get("idx", 0))
+    if tid == "learn-prev":
+        return {"idx": max(0, idx - 1)}
+    if tid == "learn-next":
+        return {"idx": min(idx + 1, total - 1) if total else 0}
+    return no_update
+
+
+@app.callback(
+    Output("learn-concept", "children"),
+    Output("learn-progress", "children"),
+    Input("learn-state", "data"),
+    State("learn-level", "value"),
+    State("learn-domain", "value"),
+)
+def render_concept(state, level, domain):
+    concepts = get_concepts(level, domain)
+    if not concepts:
+        return "No concepts yet for this selection.", "0 concepts"
+    idx = min(int((state or {}).get("idx", 0)), len(concepts) - 1)
+    c = concepts[idx]
+    card = html.Div(
+        [
+            html.Span(c["section"], className="chip"),
+            html.H3(c["title"], style={"marginTop": "10px"}),
+            dcc.Markdown(c["body"]),
+        ]
+    )
+    progress = f"Concept {idx + 1} of {len(concepts)} · {c['section']}"
+    return card, progress
+
+
+@app.callback(
+    Output("learn-guide", "children"),
+    Input("learn-level", "value"),
+)
+def render_guide(level):
+    return html.Div(
+        dcc.Markdown(build_prep_guide(level or "associate")),
+        style={"lineHeight": "1.65"},
+    )
+
+
+# ------------------------------------------------------------------ EXAM
+@app.callback(
+    Output("exam-num", "value"),
+    Output("exam-mins", "value"),
+    Input("exam-level", "value"),
+)
+def exam_defaults(level):
+    num, mins = EXAM_DEFAULTS.get(level, (20, 60))
+    return num, mins
+
+
+@app.callback(
+    Output("exam-domain", "options"),
+    Output("exam-domain", "value"),
+    Output("exam-set", "options"),
+    Output("exam-set", "value"),
+    Output("exam-hint", "children"),
+    Input("exam-level", "value"),
+    Input("exam-domain", "value"),
+    Input("exam-difficulty", "value"),
+    Input("exam-set", "value"),
+)
+def exam_filter_options(level, domain, difficulty, qset):
+    if ctx.triggered_id == "exam-level":
+        domain = "All domains"
+    doms = ["All domains"] + SECTIONS.get(level or "associate", [])
+    domain = domain if domain in doms else "All domains"
+    sets = ["All sets"] + sorted(
+        {q["source"] for q in get_bank()["questions"] if q["source"]}
+    )
+    qset = qset if qset in sets else "All sets"
+    pool = [q for q in get_bank()["questions"] if q["cert_level"] == level]
+    if qset != "All sets":
+        pool = [q for q in pool if q["source"] == qset]
+    if domain != "All domains":
+        pool = [q for q in pool if q["domain"] == domain]
+    if difficulty not in (None, "", "All"):
+        pool = [q for q in pool if q["difficulty"] == difficulty]
+    hint = f"{len(pool)} questions match this selection"
+    if len(pool) < 5:
+        hint += " — widen the filters for a realistic mock"
+    return doms, domain, sets, qset, hint
+
+
+# --------------------------------------------- question upload (AI parse)
+_UPLOAD_EXTRACT_SCHEMA = (
+    '{"questions": {"type": "array", "description": "Every multiple-choice question found", '
+    '"items": {"type": "object", "properties": {'
+    '"question": {"type": "string"}, '
+    '"option_a": {"type": "string"}, "option_b": {"type": "string"}, '
+    '"option_c": {"type": "string"}, "option_d": {"type": "string"}, '
+    '"option_e": {"type": "string"}, '
+    '"answer": {"type": "string", "description": "Letter of the correct option (A-E)"}, '
+    '"explanation": {"type": "string"}}}}}'
+)
+_UPLOAD_EXTRACT_INSTR = (
+    "This is a certification practice exam document, usually with an answer key at "
+    "the end. Extract every multiple-choice question. If an answer key is present, "
+    "use it to fill the answer letter for each question. Put option text in "
+    "option_a..option_e with letter prefixes stripped."
+)
+
+
+def _parse_document_questions(content_bytes):
+    """Parse an uploaded PDF/Word document and extract MCQs with AI functions."""
+    spark = get_spark()
+    df = spark.createDataFrame([(content_bytes,)], "content binary")
+    row = df.selectExpr(
+        "ai_extract("
+        "concat_ws('\n\n', transform("
+        "try_cast(ai_parse_document(content, MAP('version','2.0')):document:elements AS ARRAY<VARIANT>),"
+        "element -> try_cast(element:content AS STRING))),"
+        f"'{_UPLOAD_EXTRACT_SCHEMA}',"
+        f"MAP('version','2.1','instructions','{_UPLOAD_EXTRACT_INSTR}')) AS data"
+    ).collect()[0]["data"]
+    raw = json.loads(row.toJson()) if hasattr(row, "toJson") else json.loads(str(row))
+    err = raw.get("error_message")
+    if err:
+        raise RuntimeError(f"AI extraction error: {err}")
+    return raw.get("response", {}).get("questions", []) or []
+
+
+@app.callback(
+    Output("upload-domain", "options"),
+    Output("upload-domain", "value"),
+    Input("upload-level", "value"),
+)
+def upload_domain_options(level):
+    doms = SECTIONS.get(level or "associate", [])
+    return doms, (doms[0] if doms else "")
+
+
+@app.callback(
+    Output("upload-status", "children"),
+    Input("upload-questions-file", "contents"),
+    State("upload-questions-file", "filename"),
+    State("upload-level", "value"),
+    State("upload-domain", "value"),
+    State("upload-difficulty", "value"),
+    prevent_initial_call=True,
+)
+def process_question_upload(contents, filename, level, domain, difficulty):
+    if not contents:
+        return no_update
+    try:
+        import base64
+
+        from pyspark.sql import Row as _Row
+        from pyspark.sql.types import (
+            IntegerType,
+            StringType,
+            StructField,
+            StructType,
+        )
+
+        _, b64 = contents.split(",", 1)
+        raw_bytes = base64.b64decode(b64)
+        parsed = _parse_document_questions(raw_bytes)
+
+        def _v(d, k):
+            v = d.get(k)
+            return v.get("value") if isinstance(v, dict) else v
+
+        spark = get_spark()
+        max_id = int(
+            spark.sql(
+                f"SELECT coalesce(max(id), 0) m FROM {QUESTIONS_TABLE}"
+            ).first()["m"]
+        )
+        rows, skipped = [], 0
+        for q in parsed:
+            opts = [
+                str(_v(q, f"option_{c}")).strip()
+                for c in "abcde"
+                if _v(q, f"option_{c}")
+            ]
+            ans = (_v(q, "answer") or "").strip().upper()
+            text = (_v(q, "question") or "").strip()
+            if not text or len(opts) < 2 or not ans or "ABCDE".find(ans) >= len(opts):
+                skipped += 1
+                continue
+            expl = (_v(q, "explanation") or "").strip() or (
+                "No explanation provided in the source document."
+            )
+            rows.append(
+                (
+                    max_id + len(rows) + 1,
+                    level,
+                    domain,
+                    difficulty,
+                    text,
+                    json.dumps(opts),
+                    "ABCDE".find(ans),
+                    expl,
+                    filename,
+                )
+            )
+        if rows:
+            schema = StructType(
+                [
+                    StructField("id", IntegerType()),
+                    StructField("cert_level", StringType()),
+                    StructField("domain", StringType()),
+                    StructField("difficulty", StringType()),
+                    StructField("question", StringType()),
+                    StructField("options", StringType()),
+                    StructField("correct_index", IntegerType()),
+                    StructField("explanation", StringType()),
+                    StructField("source", StringType()),
+                ]
+            )
+            spark.createDataFrame([_Row(*r) for r in rows], schema).write.mode(
+                "append"
+            ).saveAsTable(QUESTIONS_TABLE)
+            get_bank(force=True)
+        if not rows:
+            return (
+                f"⚠ No valid multiple-choice questions were found in {filename} "
+                f"({skipped} candidates skipped). Check that the document contains "
+                "numbered MCQs with an answer key."
+            )
+        msg = f"✅ Added {len(rows)} questions from {filename}"
+        if skipped:
+            msg += f" ({skipped} candidates skipped — missing options or answer)"
+        return msg
+    except Exception as e:
+        log.exception("Question upload failed")
+        return f"⚠ Upload failed: {e}"
+
+
+@app.callback(
+    Output("view-setup", "style"),
+    Output("view-running", "style"),
+    Output("view-results", "style"),
+    Input("exam-mode", "data"),
+)
+def toggle_exam_views(mode):
+    mode = mode or "setup"
+    show, hide = {"display": "block"}, {"display": "none"}
+    return (
+        show if mode == "setup" else hide,
+        show if mode == "running" else hide,
+        show if mode == "results" else hide,
+    )
+
+
+@app.callback(
+    Output("exam-state", "data"),
+    Output("exam-result", "data"),
+    Output("exam-mode", "data"),
+    Output("exam-tick", "disabled"),
+    Input("exam-start", "n_clicks"),
+    Input("exam-options", "value"),
+    Input("exam-prev", "n_clicks"),
+    Input("exam-next", "n_clicks"),
+    Input({"type": "exam-nav", "index": ALL}, "n_clicks"),
+    Input("exam-retake", "n_clicks"),
+    Input("exam-submit", "n_clicks"),
+    Input("exam-tick", "n_clicks"),
+    State("exam-level", "value"),
+    State("exam-num", "value"),
+    State("exam-mins", "value"),
+    State("exam-domain", "value"),
+    State("exam-difficulty", "value"),
+    State("exam-set", "value"),
+    State("exam-state", "data"),
+    State("exam-result", "data"),
+)
+def exam_mutate(
+    n_start, opt_value, _prev, _next, _nav, _retake, _submit, _tick,
+    level, num, mins, domain, difficulty, qset, state, result,
+):
+    tid = ctx.triggered_id
+    tid_dict = tid if isinstance(tid, dict) else {}
+
+    # -- lifecycle transitions ------------------------------------------
+    if tid == "exam-retake":
+        return None, None, "setup", True
+
+    if tid == "exam-start":
+        pool = [
+            q for q in get_bank()["questions"] if q["cert_level"] == level
+        ]
+        if domain and domain != "All domains":
+            pool = [q for q in pool if q["domain"] == domain]
+        if qset not in (None, "", "All sets"):
+            pool = [q for q in pool if q["source"] == qset]
+        if difficulty not in (None, "", "All"):
+            pool = [q for q in pool if q["difficulty"] == difficulty]
+        if not pool:
+            return no_update
+        num = max(1, min(int(num or 10), len(pool)))
+        picked = random.sample(pool, num)
+        return (
+            {
+                "level": level,
+                "qids": [q["id"] for q in picked],
+                "answers": {},
+                "idx": 0,
+                "deadline": time.time() + int(mins or 60) * 60,
+                "started": datetime.now(timezone.utc).isoformat(),
+                "started_epoch": time.time(),
+            },
+            None,
+            "running",
+            False,
+        )
+
+    # -- in-flight updates ----------------------------------------------
+    if not state or result is not None or state.get("submitted"):
+        return no_update
+
+    if tid == "exam-options":
+        if opt_value is None:
+            return no_update
+        s = dict(state)
+        s["answers"] = dict(state["answers"])
+        s["answers"][str(state["qids"][state["idx"]])] = int(opt_value)
+        return s, no_update, no_update, no_update
+
+    if tid == "exam-prev":
+        s = dict(state)
+        s["idx"] = max(0, state["idx"] - 1)
+        return s, no_update, no_update, no_update
+
+    if tid == "exam-next":
+        s = dict(state)
+        s["idx"] = min(len(state["qids"]) - 1, state["idx"] + 1)
+        return s, no_update, no_update, no_update
+
+    if tid_dict.get("type") == "exam-nav":
+        s = dict(state)
+        s["idx"] = int(tid_dict["index"])
+        return s, no_update, no_update, no_update
+
+    if tid == "exam-submit":
+        res = compute_results(state)
+        save_attempt(state, res)
+        s = dict(state)
+        s["submitted"] = True
+        return s, res, "results", True
+
+    if tid == "exam-tick":  # auto-submit when time runs out
+        if state["deadline"] - time.time() <= 0:
+            res = compute_results(state)
+            save_attempt(state, res)
+            s = dict(state)
+            s["submitted"] = True
+            return s, res, "results", True
+        return no_update
+
+    return no_update
+
+
+@app.callback(
+    Output("exam-timer", "children"),
+    Output("exam-timer", "className"),
+    Input("exam-tick", "n_clicks"),
+    State("exam-state", "data"),
+)
+def tick_timer(_n, state):
+    if not state:
+        return "--:--", "timer"
+    remaining = state["deadline"] - time.time()
+    cls = "timer" + (" low" if remaining < 60 else "")
+    return fmt_secs(remaining), cls
+
+
+@app.callback(
+    Output("exam-qnum", "children"),
+    Output("exam-question", "children"),
+    Output("exam-options", "options"),
+    Output("exam-options", "value"),
+    Output("exam-progress", "children"),
+    Output("exam-nav", "children"),
+    Input("exam-state", "data"),
+)
+def render_question(state):
+    if not state:
+        return no_update
+    by_id = {q["id"]: q for q in get_bank()["questions"]}
+    qids, idx = state["qids"], state["idx"]
+    q = by_id[qids[idx]]
+    qnum = html.Div(
+        [
+            html.Span(f"Question {idx + 1} of {len(qids)}", className="q-count"),
+            html.Span(q["domain"], className="chip"),
+            html.Span(
+                f" · {q['difficulty']}",
+                style={"color": "#667085", "fontSize": "13px", "marginLeft": "6px"},
+            ),
+        ]
+    )
+    opts = [{"label": o, "value": i} for i, o in enumerate(q["options"])]
+    value = state["answers"].get(str(q["id"]))
+    progress = f"{len(state['answers'])}/{len(qids)} answered · {LEVELS[0]['label'] if state['level'] == 'associate' else LEVELS[1]['label']}"
+    nav = [
+        html.Button(
+            str(i + 1),
+            id={"type": "exam-nav", "index": i},
+            className="nav-btn"
+            + (" answered" if str(qid) in state["answers"] else "")
+            + (" current" if i == idx else ""),
+        )
+        for i, qid in enumerate(qids)
+    ]
+    return qnum, q["question"], opts, value, progress, nav
+
+
+@app.callback(
+    Output("exam-scorecard", "children"),
+    Output("exam-domains", "children"),
+    Output("exam-review", "children"),
+    Input("exam-result", "data"),
+)
+def render_results(result):
+    if not result:
+        return no_update
+    level_label = next(
+        l["label"] for l in LEVELS if l["value"] == result["level"]
+    )
+    scorecard = html.Div(
+        [
+            html.Div(
+                [
+                    html.Div(f"{result['score']:.0f}%", className="score"),
+                    html.Span(
+                        "PASSED ✅" if result["passed"] else "NOT PASSED ❌",
+                        className=("badge pass" if result["passed"] else "badge fail"),
+                    ),
+                ],
+                style={"display": "flex", "alignItems": "center", "gap": "18px"},
+            ),
+            html.P(
+                f"{result['correct']} of {result['total']} correct · "
+                f"{fmt_secs(result['duration_sec'])} used · passing bar is 70% · "
+                f"{level_label}"
+            ),
+        ]
+    )
+
+    rows = sorted(result["domains"].items(), key=lambda kv: kv[1][0] / kv[1][1])
+    table = html.Table(
+        className="domains",
+        children=[
+            html.Tr([html.Th("Domain (weakest first)"), html.Th("Correct"), html.Th("Accuracy")]),
+            *[
+                html.Tr(
+                    [
+                        html.Td(d),
+                        html.Td(f"{ok} / {tot}"),
+                        html.Td(f"{100 * ok / tot:.0f}%"),
+                    ]
+                )
+                for d, (ok, tot) in rows
+            ],
+        ],
+    )
+    weakest = rows[0][0] if rows else ""
+
+    # Trainer's evaluation: weight each domain like the real exam does, and
+    # give a readiness verdict like an instructor would after a mock.
+    weighted = None
+    num = den = 0.0
+    for d, (ok, tot) in result["domains"].items():
+        w = OFFICIAL_WEIGHTS.get(d, 0)
+        if w and tot:
+            num += w * (ok / tot)
+            den += w
+    if den:
+        weighted = 100 * num / den
+
+    if result["score"] >= 85:
+        verdict = (
+            "Exam-ready — you'd clear the bar with margin. Keep sharp with a "
+            "short mock every few days."
+        )
+    elif result["score"] >= 70:
+        verdict = (
+            "Above the 70% passing bar, but not comfortable yet — polish your "
+            "weakest domains below in the Learn tab, then retake."
+        )
+    else:
+        verdict = (
+            "Below the 70% passing bar. Work through your weakest domains "
+            "below in the Learn tab (one at a time, concept by concept), "
+            "then retake this exam."
+        )
+
+    eval_block = html.Div(
+        [
+            html.H3("Trainer's evaluation"),
+            html.P(verdict),
+            html.P(
+                (
+                    f"Exam-weighted score: {weighted:.0f}% (each domain weighted "
+                    "by its real exam weight, so strengths in high-weight domains "
+                    "count more) · raw score: {result['score']:.0f}% · passing "
+                    "bar: 70%"
+                )
+                if weighted is not None
+                else f"Raw score: {result['score']:.0f}% · passing bar: 70%",
+                className="muted",
+            ),
+        ]
+    )
+
+    domains_block = html.Div(
+        [
+            eval_block,
+            html.H3("Per-domain breakdown"),
+            html.P(f"Focus your next study session on: {weakest}", className="muted"),
+            table,
+        ]
+    )
+
+    review = []
+    for i, d in enumerate(result["details"]):
+        your = (
+            d["options"][d["your"]]
+            if d["your"] is not None
+            else "— no answer —"
+        )
+        review.append(
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.Strong(f"{i + 1}. "),
+                            html.Span(d["question"]),
+                            html.Span(d["domain"], className="chip"),
+                        ]
+                    ),
+                    html.Div(
+                        [
+                            "Your answer: ",
+                            html.Span(
+                                your,
+                                className=("ok" if d["ok"] else "ko"),
+                            ),
+                            " · Correct answer: ",
+                            html.Strong(d["options"][d["correct"]]),
+                        ],
+                        style={"marginTop": "8px"},
+                    ),
+                    html.Div(d["explanation"], className="explain"),
+                ],
+                className="review-item",
+            )
+        )
+    return scorecard, domains_block, review
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")), debug=False)
