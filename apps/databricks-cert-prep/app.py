@@ -121,7 +121,7 @@ def current_user_email():
 
 # ------------------------------------------------------------------- styles
 CSS = """
-body { font-family: 'Segoe UI', system-ui, sans-serif; background:#f2f4f7; margin:0; color:#1f2937; }
+body { font-family: 'Segoe UI', system-ui, sans-serif; background:#f4f6fa; margin:0; color:#1f2937; font-size:15px; line-height:1.6; }
 .container { max-width: 1020px; margin: 0 auto; padding: 16px; }
 .hdr { background: linear-gradient(120deg,#12161d,#2b3444); color:#fff; padding: 28px 16px; border-bottom: 4px solid #ff3621; }
 .hdr h1 { margin:0; font-size:26px; }
@@ -163,6 +163,27 @@ table.domains th, table.domains td { padding:8px 10px; text-align:left; border-b
 .upload-zone { border:2px dashed #b6c2d2; border-radius:12px; padding:22px; text-align:center; color:#667085; background:#f8fafc; }
 .upload-zone:hover { border-color:#1a73ba; color:#1a73ba; }
 .upload-status { font-weight:600; margin-top:10px; }
+
+/* ------------- learn lesson card, typography & progress ------------- */
+.lesson-card { background:#fff; border:1px solid #e3e8ef; border-left:6px solid #1a73ba; border-radius:14px; padding:26px 30px; margin-top:16px; box-shadow:0 2px 10px rgba(16,24,40,.06); animation:rise .25s ease; }
+@keyframes rise { from { opacity:.25; transform:translateY(6px); } to { opacity:1; transform:none; } }
+.lesson-card h3 { margin:10px 0 6px; font-size:22px; color:#15243b; }
+.markdown { font-size:15.5px; line-height:1.75; color:#2b3a4e; }
+.markdown p { margin:10px 0; }
+.markdown strong { color:#15243b; }
+.markdown code { background:#eef2f8; color:#1a4d8f; padding:1px 6px; border-radius:6px; font-size:13.5px; }
+.markdown pre { background:#101b2d; border-radius:10px; padding:14px 18px; overflow-x:auto; margin:12px 0; }
+.markdown pre code { background:transparent; color:#e8eef7; padding:0; }
+.markdown blockquote { border-left:4px solid #ff3621; background:#fff5f3; padding:10px 16px; border-radius:0 10px 10px 0; margin:12px 0; color:#4a3230; }
+.markdown blockquote p { margin:0; }
+.markdown table { border-collapse:collapse; margin:12px 0; }
+.markdown th, .markdown td { border:1px solid #e3e8ef; padding:7px 12px; font-size:14px; text-align:left; }
+.markdown th { background:#eef2f8; }
+.progress-wrap { margin-top:16px; display:flex; flex-direction:column; gap:7px; }
+.bar { height:8px; background:#e6ebf3; border-radius:999px; overflow:hidden; }
+.bar-fill { height:100%; background:linear-gradient(90deg,#1a73ba,#ff3621); border-radius:999px; transition:width .35s ease; }
+button { transition:all .15s ease; }
+button:hover { transform:translateY(-1px); box-shadow:0 3px 10px rgba(16,24,40,.14); filter:none; }
 """
 
 # --------------------------------------------------------- AI PREP GUIDE
@@ -508,7 +529,7 @@ SELECT * EXCEPT (rn) FROM (
         {
             "title": "Concept 9 — Complex scenario: CDC upserts with MERGE (and the multi-match failure)",
             "section": "Data Transformation and Modeling (22%)",
-            "body": """**Why it matters for the exam:** `MERGE` is the upsert workhorse — `WHEN MATCHED THEN UPDATE` fixes existing keys, `WHEN NOT MATCHED THEN INSERT` adds new ones. The classic complex twist: the CDC batch contains **several changes per key**, and MERGE fails with *multiple source rows matched and attempted to modify the same target row*. The fix is always the same: reduce the source to one row per key first, keeping the **latest** change with a `row_number()` window on the change sequence.
+            "body": """**Why it matters for the exam:** Think of MERGE as a bouncer matching incoming rows to existing rows by a key — one seat per person. If the source has three changes for the same customer, MERGE refuses to guess which one wins, and the whole load fails. Fix it before MERGE sees the data: keep only the newest change per key (rank changes by their sequence number, keep rank 1), then MERGE.
 
 **Worked example (scenario)**
 ```python
@@ -531,7 +552,7 @@ latest = (spark.table("bronze.cdc")
         {
             "title": "Concept 10 — Complex scenario: SCD Type 2 history that still answers current-state queries",
             "section": "Data Transformation and Modeling (22%)",
-            "body": """**Why it matters for the exam:** when a dimension must show the **current** state *and* answer "what did we know on date X", use **SCD Type 2**: keep every row version with effective `__START_AT`/`__END_AT` dates. In a pipeline that is `apply_changes(..., stored_as_scd_type=2)`; in plain SQL you maintain the interval columns in your own MERGE. SCD Type 1 (update in place) destroys history — the most common trap option.
+            "body": """**Why it matters for the exam:** Most tables keep only the latest truth: update a customer's city and the old value is gone forever. Sometimes the exam needs both — today's value AND what it was last month. The trick is to never overwrite: add a new row for each change, stamped with start and end dates. That is SCD Type 2. "Current" simply means the row with no end date yet.
 
 **Worked example (scenario)**
 ```python
@@ -553,7 +574,7 @@ dlt.apply_changes(
         {
             "title": "Concept 11 — Complex scenario: data skew — the one-task straggler",
             "section": "Data Transformation and Modeling (22%)",
-            "body": """**Why it matters for the exam:** the signature of **skew** is a stage where most tasks finish in minutes but one straggler runs for an hour. Cause: one dominant join/group key — or masses of NULL keys that all hash into one partition. Fixes, in order: **(1)** handle the dominant value separately (filter NULLs and process them in their own branch); **(2)** let **AQE** split skewed partitions at runtime; **(3)** broadcast the small side; **(4)** **salt** the hot key.
+            "body": """**Why it matters for the exam:** Picture 200 workers, each given one box to carry. 199 boxes are light, but one weighs as much as all the rest combined — and the job only finishes when the slowest worker does. That is skew: too many rows share one key value (often a flood of NULLs). Fix: carry the heavy box separately (filter those rows out first), or let Spark (AQE) automatically split it into smaller ones.
 
 **Worked example (scenario)**
 ```python
@@ -570,7 +591,7 @@ joined = facts.join(broadcast(dims), "cust_id")
         {
             "title": "Concept 12 — Complex scenario: window functions for running totals and latest-row-per-key",
             "section": "Data Transformation and Modeling (22%)",
-            "body": """**Why it matters for the exam:** two gold-table patterns, both window functions. *Running totals:* `SUM(...) OVER (PARTITION BY ... ORDER BY ... ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)`. *Latest row per key:* `row_number()` over `PARTITION BY key ORDER BY ts DESC`, filter `rn = 1`. A plain GROUP BY can do neither — it collapses rows instead of walking them.
+            "body": """**Why it matters for the exam:** Two everyday needs show up in gold tables: a running total (sales so far this month) and the newest row per customer. GROUP BY can't do either — it squashes rows into one. A window function instead walks row by row inside each group: it can add up everything so far (running total) or rank rows and keep #1 (latest). If the question says "alongside", "so far", or "latest per" — think window function.
 
 **Worked example (scenario)**
 ```sql
@@ -589,7 +610,7 @@ FROM daily_revenue;
         {
             "title": "Concept 13 — Complex scenario: time-travel surgery after a bad batch",
             "section": "Data Transformation and Modeling (22%)",
-            "body": """**Why it matters for the exam:** a bad batch lands at 10:00 and good data keeps arriving after 11:00. `RESTORE TABLE ... TO VERSION AS OF` reverts to a snapshot but **also loses every commit made after it** — so when the question says "keep the later data", the answer is targeted surgery: read the pre-bad version with **time travel** and `MERGE` only the affected keys back in.
+            "body": """**Why it matters for the exam:** Delta keeps every old version of your table, like save-points in a game. A bad batch at 10:00 doesn't mean starting over: you can read the table as it was before 10:00 (time travel) and copy just the damaged rows back in. Careful — RESTORE alone would also erase the good data loaded after 11:00, so when the question says "keep the later data", the answer is a small targeted MERGE from the old version, not a full restore.
 
 **Worked example (scenario)**
 ```python
@@ -608,7 +629,7 @@ good = (spark.read.option("versionAsOf", 41).table("sales")
         {
             "title": "Concept 14 — Complex scenario: liquid clustering vs over-partitioning",
             "section": "Data Transformation and Modeling (22%)",
-            "body": """**Why it matters for the exam:** partitioning a low-volume table by date explodes into **tiny partitions and files** — the over-partitioned-table trap. **Liquid clustering** (`CLUSTER BY`) works at any key cardinality, reclusters incrementally with `OPTIMIZE`, and its keys can even be changed later. Rule of thumb: partition only genuinely high-volume keys (like dates on big tables); cluster everything else.
+            "body": """**Why it matters for the exam:** Partitioning splits a table into folders, one per value. Great for a big table partitioned by date. But partitioning a small table by a column with many values (like customer_id) creates thousands of near-empty folders — tiny files everywhere, slow queries. Liquid clustering is the modern fix: it physically groups rows by the columns you actually filter on, works at any table size, and keeps tidying itself up in the background.
 
 **Worked example (scenario)**
 ```sql
@@ -684,7 +705,7 @@ SELECT region, SUM(amount) FROM sales GROUP BY region
         {
             "title": "Concept 5 — Complex scenario: one lakehouse for ML and audited ETL",
             "section": "Databricks Intelligence Platform (6%)",
-            "body": """**Why it matters for the exam:** the headline lakehouse scenario. ML workloads (video pipelines, feature engineering) need **open, file-level access** — frameworks read Parquet/Delta directly. Audited ETL/ELT needs **ACID transactions, schema enforcement, and history**. The lakehouse offers both on **one copy** of the data, governed by Unity Catalog — no copy into a proprietary format, no second platform.
+            "body": """**Why it matters for the exam:** Two teams, one table. The ML team wants files any tool can open. The audit team wants guaranteed safety: no half-written data, and a record of every change. The lakehouse gives both from one copy of the data — open file formats on top, a transaction log underneath that makes writes safe and history visible. That one sentence is the exam answer.
 
 **Worked example (scenario)** the same Delta table serves both worlds:
 ```python
@@ -703,7 +724,7 @@ spark.table("lake.video_features").history().show()
         {
             "title": "Concept 6 — Complex scenario: matching compute to workload on a budget",
             "section": "Databricks Intelligence Platform (6%)",
-            "body": """**Why it matters for the exam:** cost is a platform question. Match compute to workload: **SQL warehouses** for dashboards and analysts, **job compute** (ephemeral, created per run) for scheduled ETL, **all-purpose/serverless** compute for interactive notebooks. Wrong pairings — one big all-purpose cluster for everyone, job clusters for interactive work — are the classic trap answers. Add idle **auto-termination** and **tags** for billing attribution.
+            "body": """**Why it matters for the exam:** Paying for compute nobody is using is the classic waste, so pick compute shaped like the workload. Dashboards → a SQL warehouse that sleeps when idle. Scheduled nightly ETL → job compute that exists only for the run and then disappears. Someone typing in a notebook → interactive (all-purpose/serverless) compute. The exam describes teams and asks who should use what — always match the shape, never "one big shared cluster for everyone".
 
 **Worked example (scenario)** three teams, three compute choices:
 ```text
@@ -813,7 +834,7 @@ df.write.option("mergeSchema", "true").mode("append").saveAsTable("orders")
         {
             "title": "Concept 7 — Complex scenario: Auto Loader at scale (millions of files)",
             "section": "Data Ingestion and Loading (21%)",
-            "body": """**Why it matters for the exam:** at millions of small files, COPY INTO tracking becomes the bottleneck and directory listing is slow. Auto Loader **file notification mode** subscribes to cloud events (queue + notification service) so new files *push* themselves in — no listing. The **checkpoint** records what was processed (exactly-once), and `trigger(availableNow=True)` drains the whole backlog in multiple batches **then stops** — ideal for cheap scheduled runs.
+            "body": """**Why it matters for the exam:** COPY INTO is fine for hundreds of files, but with millions it drowns — every run it has to work out what is new. Auto Loader is built for this: the cloud itself tells it when a file lands (no scanning), a checkpoint remembers what was already loaded (nothing loads twice), and with availableNow it can even run on a schedule — swallow everything waiting, then stop and cost nothing until next time.
 
 **Worked example (scenario)**
 ```python
@@ -836,7 +857,7 @@ df = (spark.readStream.format("cloudFiles")
         {
             "title": "Concept 8 — Complex scenario: schema evolution and the rescue column",
             "section": "Data Ingestion and Loading (21%)",
-            "body": """**Why it matters for the exam:** schema changes are where streams die. `cloudFiles.schemaEvolutionMode = addNewColumns` (with a `schemaLocation` persisting the evolving schema) adds new columns without failing. When a **type** changes, `rescue` mode diverts mismatched rows into the **rescue column** (`_rescued_data`) instead of crashing — valid rows keep loading, bad rows are preserved for repair.
+            "body": """**Why it matters for the exam:** A stream dies the moment its data stops looking the way it expects — unless you tell it what to do instead. New column appeared? Teach it to evolve (addNewColumns, with a schema location to remember the evolving shape). Some rows have the wrong type? Send just those rows to a rescue column (_rescued_data) and let the good ones keep flowing. Deleting the checkpoint to "fix" it means re-reading everything — the trap answer.
 
 **Worked example (scenario)**
 ```python
@@ -853,7 +874,7 @@ df = (spark.readStream.format("cloudFiles")
         {
             "title": "Concept 9 — Complex scenario: Auto CDC with deletes and full audit history",
             "section": "Data Ingestion and Loading (21%)",
-            "body": """**Why it matters for the exam:** CDC feeds carry inserts, updates, **and deletes** (tombstones). Pipeline **Auto CDC** (`apply_changes`) needs **key columns** to match rows and a **sequence column** to order changes; deletes flow through automatically. Pick SCD Type 1 (latest state) or **SCD Type 2** when the scenario also demands audit history.
+            "body": """**Why it matters for the exam:** A CDC feed is a change log: inserts, updates, and deletes, often several per customer. To replay it correctly you need exactly two things — the key (which row a change belongs to) and the order (which change happened last). Give Auto CDC those two and it maintains the table for you, including keeping every old version (SCD Type 2) when the question also says "audit".
 
 **Worked example (scenario)**
 ```python
@@ -875,7 +896,7 @@ dlt.apply_changes(
         {
             "title": "Concept 10 — Complex scenario: watermarks, late data, and runaway state",
             "section": "Data Ingestion and Loading (21%)",
-            "body": """**Why it matters for the exam:** event-time windows must tolerate **late data**, but without a bound the state store grows forever and the job slows. `withWatermark("event_time", "2 hours")` tells the engine: once a window is more than 2 hours past, close it and **evict its state**. One option answers both exam requirements — accept 2-hour-late events AND stop state growth.
+            "body": """**Why it matters for the exam:** A streaming aggregation has to remember every window it might still need. If you never say "too late", it remembers forever — and the job slowly drowns in its own memory. The watermark is exactly that sentence: "accept events up to 2 hours late, then stop waiting." After 2 hours a window is closed, its memory is freed, and the job stays fast forever. One setting, both exam requirements.
 
 **Worked example (scenario)**
 ```python
@@ -892,7 +913,7 @@ dlt.apply_changes(
         {
             "title": "Concept 11 — Complex scenario: full refresh vs incremental (and when COPY INTO still wins)",
             "section": "Data Ingestion and Loading (21%)",
-            "body": """**Why it matters for the exam:** streaming tables only move **forward** — a refresh processes new files. If history was transformed wrongly, only a **full refresh** reprocesses everything with the fixed logic. And know when *not* to stream at all: a modest nightly file drop on a governed path that must re-run safely is still a **COPY INTO** job — it tracks loaded files in the Delta log and is idempotent.
+            "body": """**Why it matters for the exam:** A streaming table is a conveyor belt — it only moves forward. But if the transformation was wrong for months, moving forward isn't enough: you need the whole history run through the fixed logic. That is a full refresh, and the exam's words for it are "reprocess the entire source". Also know the other side of the coin: a small nightly file drop that must survive re-runs is still COPY INTO territory.
 
 **Worked example (scenario)**
 ```sql
@@ -968,7 +989,7 @@ COPY_OPTIONS ('mergeSchema' = 'true');
         {
             "title": "Concept 6 — Complex scenario: repair runs — finish the job, keep the winners",
             "section": "Working with Lakeflow Jobs (16%)",
-            "body": """**Why it matters for the exam:** when task 4 of 6 fails transiently, re-running everything re-pays for tasks 1–3. A **repair run** re-executes **only the failed task and the downstream tasks that were skipped**, keeping every successful upstream result. That is the answer whenever the scenario mentions expensive upstream tasks and a transient error.
+            "body": """**Why it matters for the exam:** A 6-step job failed at step 4 because of a hiccup. Steps 1-3 already finished and were expensive. Re-running the whole job throws that work away; a repair run keeps it and redoes only what is broken — the failed task plus everything after it. Any question containing "transient" plus "expensive upstream tasks" is a repair-run question.
 
 **Worked example (scenario)** in run history, the failed run offers **Repair run** — fix the issue (or nothing, for a cloud hiccup) and only tasks 4 → 5 → 6 re-execute, with no shared filesystem state needed because the outputs already sit in storage.
 
@@ -980,7 +1001,7 @@ COPY_OPTIONS ('mergeSchema' = 'true');
         {
             "title": "Concept 7 — Complex scenario: run-if conditions on multi-branch graphs",
             "section": "Working with Lakeflow Jobs (16%)",
-            "body": """**Why it matters for the exam:** in fan-out graphs, the **run-if** condition on a downstream task decides when it fires: `all_success` (default — a parent failure *skips* the task), `at_least_one_success` (either parent), `all_done` (any outcome — cleanup). The exam pairs two parallel branches with a publish task: publish-if-either-succeeded is `at_least_one_success`; always-run-cleanup is `all_done`.
+            "body": """**Why it matters for the exam:** When two branches feed one task, you must say when the task is allowed to run. The default ("all successful") waits for both. "At least one successful" runs on either. "All done" runs no matter what happened — right for cleanup, wrong for publishing. The exam's give-away phrase is "never when both fail" — that points straight at "at least one successful".
 
 **Worked example (scenario)** branch A (data checks) ∥ branch B (dim load) → task C (publish): set C to **At least one successful** so C runs when either branch lands and is skipped only when both fail.
 
@@ -992,7 +1013,7 @@ COPY_OPTIONS ('mergeSchema' = 'true');
         {
             "title": "Concept 8 — Complex scenario: task values, for-each, and per-environment parameters",
             "section": "Working with Lakeflow Jobs (16%)",
-            "body": """**Why it matters for the exam:** three wiring tools. **Task values** (`dbutils.jobs.taskValues.set/get`) pass runtime-computed values between tasks — the only mechanism for "task 1 computes a date and a downstream for-each task consumes it". **For-each tasks** iterate an inner task over an array (e.g., one run per region). **Job parameters** (read with `dbutils.widgets.get`) let one job serve dev and prod with different catalogs.
+            "body": """**Why it matters for the exam:** Tasks are separate notebooks — they cannot see each other's variables. Task values are the official mailbox: one task drops a value in (set), any later task picks it up (get). Two relatives complete the family: a for-each task runs the same work once per item in a list, and job parameters let one job serve dev and prod with different catalogs.
 
 **Worked example (scenario)**
 ```python
@@ -1010,7 +1031,7 @@ dbutils.jobs.taskValues.set(           d = dbutils.jobs.taskValues.get(
         {
             "title": "Concept 9 — Complex scenario: concurrency, queueing, and alerting in production",
             "section": "Working with Lakeflow Jobs (16%)",
-            "body": """**Why it matters for the exam:** production jobs need overlap and alerting settings. **Max concurrent runs** allows deliberate overlap; beyond the limit, new runs **queue** (FIFO) instead of piling up. **Notifications** on failure can target email, webhooks, or **system notification destinations (Slack/Teams)** — configured in job settings, never in code. For stable permissions across launchers, set the job's **run-as identity to a service principal**.
+            "body": """**Why it matters for the exam:** Two production facts. One: if a nightly job can run longer than a day, overlap is normal life — allow it with max concurrent runs, and extra runs wait politely in a queue instead of vanishing. Two: failure alerts belong in the job's settings (email, webhook, or a Slack notification destination) — never pasted into the job's code.
 
 **How the exam asks it**
 > A nightly job sometimes runs longer than 24 hours and overlapping runs are being dropped.
@@ -1075,7 +1096,7 @@ orders = spark.table(f"{catalog}.silver.orders")
         {
             "title": "Concept 5 — Complex scenario: the bundle is the source of truth (UI edits get reverted)",
             "section": "Implementing CI/CD (10%)",
-            "body": """**Why it matters for the exam:** a Declarative Automation Bundle is the **declarative source of truth** for its resources. UI edits to a bundle-deployed job are invisible to the bundle — the next `bundle deploy` **reverts them** to the bundle's definition. The process fix is always: change bundle-managed resources in the bundle (through Git + CI), never in the UI.
+            "body": """**Why it matters for the exam:** A bundle is a complete recipe for your job. Deploying it means "make the job look exactly like the recipe" — so any hand-edits someone made in the UI are quietly undone. The fix is not a smarter deploy flag; it is a rule: if the bundle owns it, change it in the bundle (through Git), never in the UI.
 
 **Worked example (scenario)** incident tuning in the UI lasted a week; the next deploy silently reverted it → move the tuning into the bundle YAML, open a PR, merge, deploy.
 
@@ -1087,7 +1108,7 @@ orders = spark.table(f"{catalog}.silver.orders")
         {
             "title": "Concept 6 — Complex scenario: targets, variables, and run-as for dev and prod",
             "section": "Implementing CI/CD (10%)",
-            "body": """**Why it matters for the exam:** one bundle, many environments. Declare a **variable** (e.g., `catalog`), give each **target** an override (`catalog_dev` / `catalog_prod`), reference it with `${var.catalog}`, and attach per-target settings such as `run_as` (a service principal in prod) and `permissions`. No code edits between environments — the core DAB answer.
+            "body": """**Why it matters for the exam:** One pipeline, two worlds: dev and prod. Instead of editing code per world, you write down the differences once — a variable like "catalog", with a different value per target — and the bundle fills in the right value at deploy time. Per-target settings also cover who the job runs as and who can see it. The exam's tell-tale phrase: "without code changes".
 
 **Worked example (scenario)**
 ```yaml
@@ -1106,7 +1127,7 @@ targets:
         {
             "title": "Concept 7 — Complex scenario: CI authentication — service principals over PATs",
             "section": "Implementing CI/CD (10%)",
-            "body": """**Why it matters for the exam:** CI runners must authenticate non-interactively with **least privilege**. The pattern: create a **service principal**, grant it only the rights to deploy and manage the target resources, and store its **OAuth** credentials (DATABRICKS_HOST / DATABRICKS_CLIENT_ID / DATABRICKS_CLIENT_SECRET) as CI secrets (e.g., GitHub Actions secrets). A human's personal access token in the workflow is the classic wrong answer.
+            "body": """**Why it matters for the exam:** A build machine needs to log in, but it must not be a person. Give it its own identity — a service principal — with only the rights it needs to deploy, and keep its credentials in the CI system's secret store (e.g., GitHub Actions secrets). A personal token borrowed from an engineer is the trap answer: it is over-privileged, it expires, and the day that engineer leaves, your deploys die with them.
 
 **How the exam asks it**
 > GitHub Actions deploys the bundle on every merge to main; the workflow needs secure, least-privilege authentication to the workspace.
@@ -1172,7 +1193,7 @@ VACUUM orders RETAIN 72 HOURS; -- keep only 3 days of history
         {
             "title": "Concept 5 — Complex scenario: diagnosing the 199-and-1 straggler",
             "section": "Troubleshooting, Monitoring, and Optimization (10%)",
-            "body": """**Why it matters for the exam:** reading the Spark UI is the skill. Open the slow **stage** → the tasks view shows per-task durations, shuffle read/write, and errors. The 199-fast-1-stuck pattern = **skew**: compare *shuffle read* per task — one task grabbing far more than the rest confirms it. Next stops: the driver logs (Logs tab) for errors, and the Jobs tab for what ran before/after.
+            "body": """**Why it matters for the exam:** The Spark UI's stage view lists every task and how long it took. Healthy stages look even. One task 20x slower with a huge "shuffle read" means that task was handed far more data — skew. Read the numbers before guessing anything: task durations first, shuffle read per task, then the driver logs for errors. The exam asks you to read exactly this screen.
 
 **Worked example (scenario)** stage 47: 199 tasks ≈ 2 min, one 40 min with 10x the shuffle read → inspect its keys → 70% of rows share one customer_id → filter/re-key that value and let AQE split the partition.
 
@@ -1184,7 +1205,7 @@ VACUUM orders RETAIN 72 HOURS; -- keep only 3 days of history
         {
             "title": "Concept 6 — Complex scenario: driver OOM — collect() and toPandas() on big data",
             "section": "Troubleshooting, Monitoring, and Optimization (10%)",
-            "body": """**Why it matters for the exam:** `collect()`, `.toPandas()`, and per-row loops pull data to the **driver** — a 40M-row `toPandas()` is a guaranteed OutOfMemoryError. The fix pattern: **aggregate or sample cluster-side first** and move only the small result, or use built-in charting (`display()`), which stays distributed.
+            "body": """**Why it matters for the exam:** Spark keeps data spread across many workers — until you call collect() or toPandas(), which drags everything onto the single driver machine. 40 million rows will never fit there, no matter how big it is. The habit the exam wants: shrink first, move second — aggregate or sample on the cluster, then pull only the small result.
 
 **Worked example (scenario)**
 ```python
@@ -1202,7 +1223,7 @@ summary.toPandas()        # thousands of rows, not millions
         {
             "title": "Concept 7 — Complex scenario: the 400,000-file table — compaction and clustering",
             "section": "Troubleshooting, Monitoring, and Optimization (10%)",
-            "body": """**Why it matters for the exam:** the small-files disease: hundreds of thousands of tiny files make every query list and open them all. `OPTIMIZE` **compacts** them; with **clustering** (`CLUSTER BY` / `ZORDER BY`) on the columns queries actually filter, file **statistics** let most files be skipped. `VACUUM` afterwards reclaims storage from removed versions — but VACUUM alone compacts nothing (classic trap).
+            "body": """**Why it matters for the exam:** A Delta table is just a pile of files. Hundreds of thousands of tiny ones is death by paperwork: every query must list and open them all. OPTIMIZE glues them into a few big healthy files, and clustering on your filter columns makes sure related rows live together, so most files can be skipped entirely. VACUUM only deletes old junk — it fixes nothing, it just cleans up afterwards.
 
 **Worked example (scenario)**
 ```sql
@@ -1219,7 +1240,7 @@ VACUUM sales.orders RETAIN 168 HOURS;   -- reclaim obsolete files
         {
             "title": "Concept 8 — Complex scenario: unblocking a poisoned micro-batch",
             "section": "Troubleshooting, Monitoring, and Optimization (10%)",
-            "body": """**Why it matters for the exam:** when a stream keeps failing the **same micro-batch** (the checkpoint is stuck), one input is poisoned. Recovery order: identify the bad record from the task error → **quarantine** it (move the file out of the source path, or let the rescue column capture it) → restart the query **from its checkpoint** so it advances past the batch. Deleting the checkpoint means reprocessing everything — the seductive wrong answer.
+            "body": """**Why it matters for the exam:** A stream failed and keeps failing the same batch — one file is poisoned. Do not nuke the checkpoint (that means "start all over again" and re-read everything). Do surgery: find the bad file from the error message, quarantine it (move it aside, or catch it with the rescue column), then restart the stream — the checkpoint picks up right where it should.
 
 **How the exam asks it**
 > A streaming job is stuck on the same micro-batch after one malformed file; valid data behind it is delayed.
@@ -1229,7 +1250,7 @@ VACUUM sales.orders RETAIN 168 HOURS;   -- reclaim obsolete files
         {
             "title": "Concept 9 — Complex scenario: warehouse concurrency — scale out for dashboards",
             "section": "Troubleshooting, Monitoring, and Optimization (10%)",
-            "body": """**Why it matters for the exam:** dashboard load is a **concurrency** problem, not a speed problem. A single warehouse cluster executes one group of queries at a time; 200 simultaneous users queue. The fix is **scaling out** — more clusters in the warehouse — which raises *parallel* query capacity. Scaling up (bigger nodes) makes each query faster but does not raise concurrency — exactly the distinction the exam tests.
+            "body": """**Why it matters for the exam:** 200 dashboard users at 9 AM is a traffic problem, not a speed problem. One warehouse cluster works through one queue of queries at a time. More clusters = more queues = more users served at once. Bigger machines make each query faster but do not add lanes — and that distinction is the whole question.
 
 **How the exam asks it**
 > At 9 AM, 200 concurrent dashboard users overwhelm a single-cluster warehouse; queries queue for minutes.
@@ -1299,7 +1320,7 @@ GRANT SELECT ON TABLE workspace.cert_prep.questions TO `group Analysts`;
         {
             "title": "Concept 6 — Complex scenario: row filters and column masks in production",
             "section": "Governance and Security (15%)",
-            "body": """**Why it matters for the exam:** the two fine-grained security tools, both attached to the **table** so they apply no matter how the query arrives (SQL, notebook, dashboard). A **row filter** is a function returning a boolean per row (e.g., region must match the user's group). A **column mask** rewrites a column's value per user (e.g., salary → NULL outside hr_comp). One table serves everyone; copies-per-team and "trust users to filter" are the traps.
+            "body": """**Why it matters for the exam:** One table, different eyes. A row filter is a small rule attached to the table: "this row only shows if it belongs to the viewer's region". A column mask does the same for one column: "salary is visible only to the HR group; everyone else sees NULL". Because both attach to the table itself, every path — SQL, notebooks, dashboards — is covered automatically. No copies, no trusting users to behave.
 
 **Worked example (scenario)**
 ```sql
@@ -1319,7 +1340,7 @@ ALTER TABLE main.gold.customers SET ROW FILTER
         {
             "title": "Concept 7 — Complex scenario: least privilege and evidence for auditors",
             "section": "Governance and Security (15%)",
-            "body": """**Why it matters for the exam:** two production patterns. *Team isolation in a shared catalog:* grant USE plus object-level grants **only on each team's schemas** — never catalog-wide SELECT that leaks finance data. *Evidence for auditors:* Unity Catalog records every access and grant in **system tables** (`system.access.audit`) — queryable, timestamped, and the authoritative answer for "who saw what in the last 90 days".
+            "body": """**Why it matters for the exam:** Sharing a catalog safely means granting the smallest thing that works: each team gets access to its own schemas, never the whole catalog. And when an auditor asks "prove who touched the payroll data in the last 90 days", the answer is not screenshots or a spreadsheet — Unity Catalog already writes down every single action in system audit tables. Query them, export, done.
 
 **Worked example (scenario)**
 ```sql
@@ -1340,7 +1361,7 @@ WHERE service_name = 'UnityCatalog';
         {
             "title": "Concept 8 — Complex scenario: sharing data without shipping it (Delta Sharing)",
             "section": "Governance and Security (15%)",
-            "body": """**Why it matters for the exam:** share live data **without copies**: a **share** (a list of tables) is granted to a **recipient**; they query it with their own compute through a governed endpoint, and revoking the recipient cuts access **instantly**. It is read-only by design. Nightly exports, partner workspace accounts, and VPN mounts are the trap answers whenever policy says "no copies" or "instantly revocable".
+            "body": """**Why it matters for the exam:** The safest copy is the one you never make. A share is a list of tables you publish; a recipient is the partner's key to it. They query with their own compute — your data never leaves, and revoking the recipient cuts them off instantly. When "no copies" and "instantly revocable" show up in the same question, it is always Delta Sharing.
 
 **Worked example (scenario)**
 ```sql
@@ -1359,7 +1380,7 @@ GRANT SELECT ON SHARE partner_analytics TO RECIPIENT partner_acme;
         {
             "title": "Concept 9 — Complex scenario: lineage for impact analysis and identity-proof pipelines",
             "section": "Governance and Security (15%)",
-            "body": """**Why it matters for the exam:** two "who depends on this / who runs this" scenarios. *Impact analysis:* before renaming `cust_id`, **column-level lineage** lists every downstream table, view, and query touching it — SHOW GRANTS lists principals, not dependents. *Identity-proof pipelines:* run jobs as a **service principal** with transferred ownership, so a departed employee's revoked permissions cannot break nightly loads.
+            "body": """**Why it matters for the exam:** Two "who" questions. Before renaming a column you need everyone downstream who uses it — that list is lineage, and Unity Catalog tracks it automatically, down to the column. And a job that depends on one human's login dies the day that person leaves the company — so run jobs as a service principal, a job-shaped identity that never resigns, and hand ownership to it.
 
 **How the exam asks it**
 > Before renaming cust_id to customer_id, the team needs every dependent object.
@@ -2086,10 +2107,24 @@ def render_concept(state, level, domain):
         [
             html.Span(c["section"], className="chip"),
             html.H3(c["title"], style={"marginTop": "10px"}),
-            dcc.Markdown(c["body"]),
-        ]
+            dcc.Markdown(c["body"], className="markdown"),
+        ],
+        className="lesson-card",
     )
-    progress = f"Concept {idx + 1} of {len(concepts)} · {c['section']}"
+    pct = round(100 * (idx + 1) / len(concepts))
+    progress = html.Div(
+        [
+            html.Div(
+                [html.Div("", style={"width": f"{pct}%"}, className="bar-fill")],
+                className="bar",
+            ),
+            html.Span(
+                f"Concept {idx + 1} of {len(concepts)} · {c['section']}",
+                className="muted",
+            ),
+        ],
+        className="progress-wrap",
+    )
     return card, progress
 
 
