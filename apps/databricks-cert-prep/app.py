@@ -572,7 +572,7 @@ latest = (spark.table("bronze.cdc")
 **How the exam asks it**
 > A MERGE fails with multiple source rows matched on the same target row. The feed contains several updates per key per batch and only the latest should win.
 
-✅ **Deduplicate the source with a `row_number()` window on the change sequence, keeping rank = 1.** Traps: "INSERT OVERWRITE the target" (loses other rows), "randomly sample the source" (loses changes), "increase cluster memory" (not a resource problem).""",
+✅ **Before merging, keep only the newest change per customer — rank the changes by sequence and keep rank 1.** Traps: "replace the whole table" (wipes other rows), "randomly keep one row" (may keep the wrong one), "add more memory" (the problem is duplicate keys, not memory).""",
         },
         {
             "title": "Concept 10 — Complex scenario: SCD Type 2 history that still answers current-state queries",
@@ -594,7 +594,7 @@ dlt.apply_changes(
 **How the exam asks it**
 > A dimension must preserve every historical version of each customer while still serving current-state queries.
 
-✅ **SCD Type 2 — retain row versions with effective start/end dates.** Traps: "update rows in place" (SCD 1 loses history), "drop and reload daily, keeping yesterday's copy", "store history in plain Parquet alongside".""",
+✅ **SCD Type 2 — every change gets its own row with start/end dates, so old versions survive.** Traps: "update rows in place" (old values are lost), "reload daily and keep a copy of yesterday", "keep history in plain Parquet files next to the table".""",
         },
         {
             "title": "Concept 11 — Complex scenario: data skew — the one-task straggler",
@@ -611,7 +611,7 @@ joined = facts.join(broadcast(dims), "cust_id")
 **How the exam asks it**
 > 199 tasks finish in about 2 minutes, one runs 40 minutes, and 70% of rows share one customer_id.
 
-✅ **Filter or re-key the dominant value before the shuffle, or enable AQE skew handling.** Traps: "make the cluster 10x bigger", "repartition to one file", "disable the Spark UI to save memory".""",
+✅ **Deal with the crowded key before the shuffle — pull those rows out and handle them separately, or let Spark (AQE) split them automatically.** Traps: "make the cluster 10x bigger", "shrink everything to one file", "turn off the Spark UI to save memory".""",
         },
         {
             "title": "Concept 12 — Complex scenario: window functions for running totals and latest-row-per-key",
@@ -630,7 +630,7 @@ FROM daily_revenue;
 **How the exam asks it**
 > Finance needs each customer's cumulative month-to-date revenue alongside monthly revenue in one query.
 
-✅ **A window partitioned by customer and month ordered by day, with SUM over an unbounded-preceding-to-current-row frame.** Traps: "GROUP BY with sum and max as extra columns", "self-join on all earlier days", "broadcast self-join with a day rollup".""",
+✅ **A window function — inside each customer and month, walk the days in order and sum everything from the month's start up to each day.** Traps: "GROUP BY with sum and max" (squashes rows — no running total), "self-join on earlier days" (works but slow), "broadcast self-join with a rollup".""",
         },
         {
             "title": "Concept 13 — Complex scenario: time-travel surgery after a bad batch",
@@ -649,7 +649,7 @@ good = (spark.read.option("versionAsOf", 41).table("sales")
 **How the exam asks it**
 > Revert only the 10:00 corruption while keeping everything loaded after 11:00.
 
-✅ **MERGE the corrected rows from the pre-bad snapshot via time travel.** Traps: "RESTORE to the version before 10:00" (discards the later good commits), "VACUUM immediately", "OPTIMIZE with ZORDER".""",
+✅ **Read the table as it was before 10:00 (time travel) and MERGE only the damaged rows back in.** Traps: "RESTORE the whole table" (also erases the good 11:00 data), "VACUUM immediately", "OPTIMIZE with ZORDER" (neither repairs data).""",
         },
         {
             "title": "Concept 14 — Complex scenario: liquid clustering vs over-partitioning",
@@ -668,7 +668,7 @@ OPTIMIZE sales.gold_orders;   -- incremental recluster
 **How the exam asks it**
 > A few thousand rows per day partitioned by date; queries filter on customer_id (millions of values).
 
-✅ **Replace Hive partitioning with liquid clustering on the high-cardinality filter columns.** Traps: "add more partition columns", "partition by customer_id" (one directory per customer — far worse), "disable statistics collection".""",
+✅ **Switch to liquid clustering on the columns people filter on, like customer_id.** Traps: "add more partition columns" (more tiny folders), "partition by customer_id" (one folder per customer — far worse), "turn off statistics collection".""",
         },
     ],
     (
@@ -744,7 +744,7 @@ spark.table("lake.video_features").history().show()
 **How the exam asks it**
 > A data architect designs a model that works for video-based ML workloads and highly audited batch ETL/ELT workloads. How does a lakehouse help?
 
-✅ **It stores open-format data that ML frameworks read directly, while ACID transactions and audit history serve the governed ETL workloads on the same copy.** Traps: "ML must copy data into a proprietary format first", "the lakehouse is batch-ETL only", "audit history is removed to speed ML up".""",
+✅ **One copy of the data serves both teams — ML tools read the open files directly, while the Delta log underneath gives ETL safe writes and a full audit trail.** Traps: "ML must copy data into a proprietary format first", "the lakehouse only does batch ETL", "audit history is removed to make ML faster".""",
         },
         {
             "title": "Concept 6 — Complex scenario: matching compute to workload on a budget",
@@ -761,7 +761,7 @@ ML session  -> all-purpose / serverless interactive compute
 **How the exam asks it**
 > A startup has BI analysts, scheduled ETL engineers, and one ad-hoc Python data scientist on a tight budget.
 
-✅ **Warehouses for dashboards, job compute for scheduled ETL, serverless/all-purpose for interactive Python.** Traps: "one shared all-purpose cluster 24/7", "job clusters for interactive exploration to save money", "warehouses for the ETL jobs".""",
+✅ **Match the shape: dashboards → SQL warehouse (sleeps when idle), nightly ETL → job compute (exists only during the run), the Python session → interactive/serverless compute.** Traps: "one shared cluster running 24/7", "job clusters for interactive work to save money", "run the ETL on SQL warehouses".""",
         },
     ],
     (
@@ -877,7 +877,7 @@ df = (spark.readStream.format("cloudFiles")
 **How the exam asks it**
 > Several million small JSON files per day; nightly COPY INTO takes hours and does not keep up.
 
-✅ **Auto Loader with file notification mode, a persistent checkpoint, and schema evolution.** Traps: "increase the warehouse size running COPY INTO", "re-read the whole directory with INSERT OVERWRITE", "ask the source to consolidate files and keep COPY INTO".""",
+✅ **Switch to Auto Loader — let the cloud announce new files (notification mode), keep a checkpoint so nothing loads twice, and let the schema grow on its own.** Traps: "give COPY INTO a bigger warehouse", "re-read the whole directory and overwrite", "ask the source to send fewer, bigger files".""",
         },
         {
             "title": "Concept 8 — Complex scenario: schema evolution and the rescue column",
@@ -894,7 +894,7 @@ df = (spark.readStream.format("cloudFiles")
 **How the exam asks it**
 > Mid-week a source adds a column and the pipeline crashes; later a column's type changes from string to integer.
 
-✅ **addNewColumns with a schemaLocation for new columns; the rescue column captures type-mismatched rows without failing the stream.** Traps: "delete the checkpoint and relearn the schema" (reprocesses everything), "switch the source to CSV so columns are strings", "hardcode the original schema forever".""",
+✅ **Let the schema grow (addNewColumns plus a schema location to remember it), and send wrong-type rows to a rescue column instead of crashing.** Traps: "delete the checkpoint to relearn the schema" (re-reads everything), "switch to CSV so everything is a string", "hardcode the original schema forever".""",
         },
         {
             "title": "Concept 9 — Complex scenario: Auto CDC with deletes and full audit history",
@@ -916,7 +916,7 @@ dlt.apply_changes(
 **How the exam asks it**
 > An operational database's CDC feed includes deletes; downstream analysts also need full change history for audit.
 
-✅ **Ingest with Auto Loader into a streaming table and apply changes with keys and sequence, stored as SCD Type 2.** Traps: "dropDuplicates on primary keys so only the newest row survives" (history gone), "load raw and let analysts interpret", "disable deletes".""",
+✅ **Load the feed with Auto Loader, then let apply_changes do the work — give it the key (which customer), the sequence (which change came last), and ask it to keep every old version (SCD Type 2).** Traps: "dropDuplicates on the keys" (history and deletes vanish), "load it raw and let analysts figure it out", "just filter out deletes".""",
         },
         {
             "title": "Concept 10 — Complex scenario: watermarks, late data, and runaway state",
@@ -933,7 +933,7 @@ dlt.apply_changes(
 **How the exam asks it**
 > A streaming aggregation must accept events up to 2 hours late while the state store keeps growing and processing slows.
 
-✅ **Set a 2-hour watermark on event time so closed windows drop their state after the threshold.** Traps: "increase the checkpoint interval to 2 hours", "add executors so state fits in memory", "deduplicate late events on the driver with pandas".""",
+✅ **Set a 2-hour watermark on event time — after 2 hours a window is closed and its memory is freed.** Traps: "checkpoint every 2 hours instead" (does nothing to state), "add more executors to hold the state", "deduplicate late events on the driver with pandas".""",
         },
         {
             "title": "Concept 11 — Complex scenario: full refresh vs incremental (and when COPY INTO still wins)",
@@ -954,7 +954,7 @@ COPY_OPTIONS ('mergeSchema' = 'true');
 **How the exam asks it**
 > Months ago, two days of files were processed with a wrong transformation; what reprocesses them?
 
-✅ **A full refresh — reprocess the entire source with the fixed logic.** Same family: nightly partner files, idempotent reruns, modest volume → ✅ **COPY INTO**. Traps: "DELETE the rows and OPTIMIZE", "VACUUM the table", "drop and recreate the checkpoint".""",
+✅ **A full refresh — run the entire history through the fixed transformation.** Same family: a small nightly partner file drop that must survive re-runs → ✅ **COPY INTO**. Traps: "DELETE the bad rows and OPTIMIZE" (the table never recomputes them), "VACUUM the table", "drop and recreate the checkpoint".""",
         },
     ],
     (
@@ -1021,7 +1021,7 @@ COPY_OPTIONS ('mergeSchema' = 'true');
 **How the exam asks it**
 > Task 4 of a 6-task nightly job failed on a transient cloud error; tasks 1-3 are expensive and completed successfully.
 
-✅ **A repair run — retries task 4 and its downstream tasks, keeping 1–3 results.** Traps: "re-run the entire job", "create a new job with only tasks 4-6", "trigger a second concurrent run and cancel the slower one".""",
+✅ **Click Repair run — only task 4 and the tasks after it re-run; the expensive results of tasks 1-3 are kept.** Traps: "re-run the entire job", "build a new job with tasks 4-6", "start a second run and cancel the slower one".""",
         },
         {
             "title": "Concept 7 — Complex scenario: run-if conditions on multi-branch graphs",
@@ -1033,7 +1033,7 @@ COPY_OPTIONS ('mergeSchema' = 'true');
 **How the exam asks it**
 > Task C must run if either parallel parent succeeds but never when both fail.
 
-✅ **At least one successful.** Traps: "All successful" (requires both parents), "All done" (runs even when both fail), "All failed" (fires only on double failure).""",
+✅ **At least one successful — it runs when either parent succeeds and skips only when both fail.** Traps: "All successful" (waits for both), "All done" (runs even when both fail), "All failed" (fires only when both fail).""",
         },
         {
             "title": "Concept 8 — Complex scenario: task values, for-each, and per-environment parameters",
@@ -1051,7 +1051,7 @@ dbutils.jobs.taskValues.set(           d = dbutils.jobs.taskValues.get(
 **How the exam asks it**
 > Task 1 computes yesterday's partition date and must feed a for-each task that runs per region.
 
-✅ **taskValues.set() in task 1, referenced by the for-each input.** Traps: "embed the date in the cron expression", "hardcode the date in both tasks and update daily", "pass it via job tags".""",
+✅ **Task 1 saves the date with taskValues.set(); the for-each task reads it with taskValues.get().** Traps: "put the date in the cron expression", "hardcode the date and edit it every morning", "pass it through job tags".""",
         },
         {
             "title": "Concept 9 — Complex scenario: concurrency, queueing, and alerting in production",
@@ -1061,7 +1061,7 @@ dbutils.jobs.taskValues.set(           d = dbutils.jobs.taskValues.get(
 **How the exam asks it**
 > A nightly job sometimes runs longer than 24 hours and overlapping runs are being dropped.
 
-✅ **Raise max concurrent runs so overlap is deliberate; excess runs queue.** Same family: Slack alert on every failed run → ✅ **a job failure notification using a webhook/notification destination**. Traps: "remove the schedule and trigger manually", "split into two nightly jobs", "reduce the timeout to kill long runs".""",
+✅ **Raise max concurrent runs — overlap is allowed, and extra runs wait in a queue.** Same family: Slack alert on every failed run → ✅ **set it up in the job's notification settings (webhook or Slack destination)**. Traps: "drop the schedule and run it by hand", "split into two nightly jobs", "shorten the timeout to kill long runs".""",
         },
     ],
     (
@@ -1128,7 +1128,7 @@ orders = spark.table(f"{catalog}.silver.orders")
 **How the exam asks it**
 > A teammate tuned a bundle-deployed job in the UI; the next bundle deployment reverted the changes.
 
-✅ **All changes to bundle-managed resources live in the bundle via Git and CI — the single source of truth.** Traps: "deploy with --force so the bundle merges UI edits" (no such merge), "remove the job from the bundle and manage it in the UI", "disable deployments during incidents".""",
+✅ **If the bundle owns it, change it in the bundle (through Git) — then deploys never surprise anyone.** Traps: "deploy with --force to merge UI edits" (there is no such merge), "remove the job from the bundle", "pause deployments during incidents".""",
         },
         {
             "title": "Concept 6 — Complex scenario: targets, variables, and run-as for dev and prod",
@@ -1147,7 +1147,7 @@ targets:
 **How the exam asks it**
 > One pipeline definition must run against catalog_dev or catalog_prod depending on environment, and the prod job runs as a service principal.
 
-✅ **A bundle variable for the catalog with per-target overrides plus per-target permissions and run-as.** Traps: "two pipeline definitions edited by hand", "hardcode prod and rewrite for dev", "two separate bundles with changes copied by hand".""",
+✅ **One variable (the catalog) with a different value per target, plus per-target run-as and permissions — same code, both worlds.** Traps: "two pipeline definitions edited by hand", "hardcode prod and rewrite for dev", "two bundles with changes copied by hand".""",
         },
         {
             "title": "Concept 7 — Complex scenario: CI authentication — service principals over PATs",
@@ -1157,7 +1157,7 @@ targets:
 **How the exam asks it**
 > GitHub Actions deploys the bundle on every merge to main; the workflow needs secure, least-privilege authentication to the workspace.
 
-✅ **A service principal with OAuth credentials stored as CI secrets and scoped deployment rights.** Traps: "the senior engineer's PAT in a GitHub secret", "workspace admin credentials for the runner", "a shared team username and password in the workflow file".""",
+✅ **A service principal — its own login for the build machine, stored in CI secrets, with only the rights to deploy.** Traps: "the senior engineer's personal token in a GitHub secret", "admin credentials for the runner", "a shared team password in the workflow file".""",
         },
     ],
     (
@@ -1225,7 +1225,7 @@ VACUUM orders RETAIN 72 HOURS; -- keep only 3 days of history
 **How the exam asks it**
 > Diagnose a job hanging at the same stage with almost no task progress.
 
-✅ **Check per-task durations and shuffle read in the stage's task list — a straggler with disproportionate shuffle read indicates skew on that key.** Traps: "the driver is busy printing results", "VACUUM is running", "the UI is sleeping".""",
+✅ **Open the slow stage's task list and compare task durations and shuffle read — one task grabbing far more data than the rest is skew.** Traps: "the driver is busy printing results", "VACUUM is running", "the UI is sleeping".""",
         },
         {
             "title": "Concept 6 — Complex scenario: driver OOM — collect() and toPandas() on big data",
@@ -1243,7 +1243,7 @@ summary.toPandas()        # thousands of rows, not millions
 **How the exam asks it**
 > A notebook calls .toPandas() on 40M rows for a quick chart and the driver crashes with OutOfMemoryError.
 
-✅ **Aggregate or sample on the cluster first and convert only the small summarized result.** Traps: "increase driver memory to 1 TB", "cache the DataFrame first so toPandas reads from cache", "convert the DataFrame to Scala".""",
+✅ **Shrink it on the cluster first — aggregate or sample, then call toPandas() only on the small result.** Traps: "give the driver 1 TB of memory", "cache it first" (it still collects everything), "rewrite the code in Scala".""",
         },
         {
             "title": "Concept 7 — Complex scenario: the 400,000-file table — compaction and clustering",
@@ -1260,7 +1260,7 @@ VACUUM sales.orders RETAIN 168 HOURS;   -- reclaim obsolete files
 **How the exam asks it**
 > A Delta table has about 400,000 small files; queries take minutes just to list files; analysts filter on customer_id and order_date.
 
-✅ **Run OPTIMIZE with clustering on the filter columns so compaction and file skipping return.** Traps: "VACUUM immediately", "restart the warehouse hourly", "move the table to CSV format".""",
+✅ **Run OPTIMIZE with clustering on customer_id and order_date — files get big and healthy, and queries can skip most of them.** Traps: "VACUUM immediately" (only deletes old files, fixes nothing), "restart the warehouse hourly", "move the table to CSV".""",
         },
         {
             "title": "Concept 8 — Complex scenario: unblocking a poisoned micro-batch",
@@ -1270,7 +1270,7 @@ VACUUM sales.orders RETAIN 168 HOURS;   -- reclaim obsolete files
 **How the exam asks it**
 > A streaming job is stuck on the same micro-batch after one malformed file; valid data behind it is delayed.
 
-✅ **Quarantine the offending file and restart the query so the checkpoint advances past the failed batch.** Traps: "delete the checkpoint directory and restart" (reprocesses all data), "drop the target table and rebuild", "disable schema checking so bad files load as NULLs".""",
+✅ **Move the bad file aside (quarantine) and restart the stream — the checkpoint skips past it and keeps going.** Traps: "delete the checkpoint" (re-reads everything, usually duplicating), "drop the table and rebuild", "turn off schema checking so bad files load as NULLs".""",
         },
         {
             "title": "Concept 9 — Complex scenario: warehouse concurrency — scale out for dashboards",
@@ -1280,7 +1280,7 @@ VACUUM sales.orders RETAIN 168 HOURS;   -- reclaim obsolete files
 **How the exam asks it**
 > At 9 AM, 200 concurrent dashboard users overwhelm a single-cluster warehouse; queries queue for minutes.
 
-✅ **Increase the warehouse's cluster count so more queries execute in parallel.** Traps: "increase node size only, keeping queries sequential", "disable result caching", "move the dashboard to a job cluster that runs hourly".""",
+✅ **Add more clusters to the warehouse — more lanes, so more users get served at once.** Traps: "buy bigger nodes only" (each query faster, still one queue), "disable result caching", "run the dashboard hourly on a job cluster".""",
         },
     ],
     (
@@ -1360,7 +1360,7 @@ ALTER TABLE main.gold.customers SET ROW FILTER
 **How the exam asks it**
 > Analysts in five regions query one governed table but may only see their own region.
 
-✅ **A row filter function on the table filtering rows by the querying user's group.** Same family: compensation visible only to the hr_comp group → ✅ **a column mask returning the real value for members and NULL for everyone else**.""",
+✅ **A row filter on the table — each viewer only sees the rows belonging to their own region.** Same family: compensation visible only to the hr_comp group → ✅ **a column mask — members see the real value, everyone else sees NULL**.""",
         },
         {
             "title": "Concept 7 — Complex scenario: least privilege and evidence for auditors",
@@ -1381,7 +1381,7 @@ WHERE service_name = 'UnityCatalog';
 **How the exam asks it**
 > Two teams share a catalog; team B must never browse team A's finance schemas.
 
-✅ **Per-schema grants (USE + SELECT on their own schemas) with no broad catalog-level grants.** Same family: auditor wants 90 days of evidence → ✅ **Unity Catalog audit events in system tables**. Traps: screenshots of the permissions UI, a shared spreadsheet of grants, job run history.""",
+✅ **Grant each team access only to its own schema — never the whole catalog.** Same family: an auditor wants 90 days of proof → ✅ **Unity Catalog audit tables**. Traps: screenshots of the permissions UI, a shared spreadsheet of grants, job run history.""",
         },
         {
             "title": "Concept 8 — Complex scenario: sharing data without shipping it (Delta Sharing)",
@@ -1400,7 +1400,7 @@ GRANT SELECT ON SHARE partner_analytics TO RECIPIENT partner_acme;
 **How the exam asks it**
 > A partner must analyze 12 of your Delta tables; copying data is forbidden and access must be revocable immediately.
 
-✅ **A Delta Sharing share with those tables and a recipient whose access revokes instantly.** Traps: "nightly export to the partner's bucket", "give partner users workspace accounts with SELECT", "read-only DBFS mounts over VPN".""",
+✅ **A Delta Sharing share — publish the 12 tables and give the partner a recipient; revoking the recipient cuts them off instantly.** Traps: "nightly exports to the partner's bucket", "partner users with workspace accounts", "read-only mounts over VPN".""",
         },
         {
             "title": "Concept 9 — Complex scenario: lineage for impact analysis and identity-proof pipelines",
@@ -1410,7 +1410,7 @@ GRANT SELECT ON SHARE partner_analytics TO RECIPIENT partner_acme;
 **How the exam asks it**
 > Before renaming cust_id to customer_id, the team needs every dependent object.
 
-✅ **Column-level lineage.** Same family: a nightly job's owner is leaving and their permissions will be revoked → ✅ **recreate the job under a service principal and transfer table ownership and grants to it**. Traps: "ask the employee for a long-lived token", "store their PAT in a secret scope", "rebuild every table nightly to reset ownership".""",
+✅ **Column-level lineage — Unity Catalog already knows every object that depends on that column.** Same family: the job's owner is leaving → ✅ **recreate the job under a service principal and hand it the ownership and grants**. Traps: "ask the departing engineer for a long-lived token", "store their PAT in a secret scope", "rebuild every table nightly".""",
         },
     ],
 }
