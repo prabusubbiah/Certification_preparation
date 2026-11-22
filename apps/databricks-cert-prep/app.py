@@ -121,12 +121,16 @@ def current_user_email():
 
 # ------------------------------------------------------------------- styles
 CSS = """
-body { font-family: 'Segoe UI', system-ui, sans-serif; background:#f4f6fa; margin:0; color:#1f2937; font-size:15px; line-height:1.6; }
-.container { max-width: 1020px; margin: 0 auto; padding: 16px; }
-.hdr { background: linear-gradient(120deg,#12161d,#2b3444); color:#fff; padding: 28px 16px; border-bottom: 4px solid #ff3621; }
-.hdr h1 { margin:0; font-size:26px; }
-.hdr p { margin:6px 0 0; color:#c7d0dd; }
-.panel { background:#fff; border-radius:12px; padding:20px; margin-top:18px; box-shadow: 0 1px 4px rgba(16,24,40,.08); }
+body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background:linear-gradient(180deg,#f7f9fc,#eef2f7) fixed; margin:0; color:#1f2937; font-size:15px; line-height:1.6; -webkit-font-smoothing:antialiased; }
+.container { max-width: 1080px; margin: 0 auto; padding: 22px 20px 44px; }
+::selection { background:#1a73ba; color:#fff; }
+a { color:#1a73ba; }
+.hdr { position:relative; overflow:hidden; background:linear-gradient(120deg,#0e1420,#2b3444 55%,#374663); color:#fff; padding:32px 34px; border-radius:16px; border-bottom:4px solid #ff3621; box-shadow:0 6px 24px rgba(16,24,40,.18); }
+.hdr::after { content:""; position:absolute; right:-70px; top:-70px; width:260px; height:260px; border-radius:50%; background:radial-gradient(circle,rgba(255,54,33,.25),transparent 70%); pointer-events:none; }
+.hdr h1 { margin:0; font-size:28px; letter-spacing:.3px; }
+.hdr p { margin:8px 0 0; color:#c7d0dd; max-width:72ch; }
+.panel { background:#fff; border:1px solid #e3e8ef; border-radius:16px; padding:24px 26px; margin-top:16px; box-shadow:0 2px 12px rgba(16,24,40,.06); }
+.panel h3 { color:#15243b; letter-spacing:.2px; }
 .controls { display:flex; gap:16px; flex-wrap:wrap; align-items:flex-end; }
 .controls .field { display:flex; flex-direction:column; gap:4px; min-width:280px; flex:1 1 280px; max-width:460px; }
 label { font-size:12px; font-weight:600; color:#667085; text-transform:uppercase; letter-spacing:.4px; }
@@ -184,6 +188,27 @@ table.domains th, table.domains td { padding:8px 10px; text-align:left; border-b
 .bar-fill { height:100%; background:linear-gradient(90deg,#1a73ba,#ff3621); border-radius:999px; transition:width .35s ease; }
 button { transition:all .15s ease; }
 button:hover { transform:translateY(-1px); box-shadow:0 3px 10px rgba(16,24,40,.14); filter:none; }
+
+/* ---------------- tab bar ---------------- */
+.tabbar { display:flex; gap:4px; margin-top:16px; padding:6px; background:#fff; border:1px solid #e3e8ef; border-radius:14px; box-shadow:0 1px 4px rgba(16,24,40,.06); }
+.tab-item { padding:10px 18px; border-radius:9px; font-weight:600; font-size:14.5px; color:#667085; cursor:pointer; transition:all .15s ease; user-select:none; }
+.tab-item:hover { color:#15243b; background:#eef2f8; }
+.tab-item--selected { background:linear-gradient(120deg,#1a73ba,#28344a); color:#fff; box-shadow:0 2px 8px rgba(26,115,186,.35); }
+
+/* ---------------- exam view polish ---------------- */
+.q-text { font-size:17px; font-weight:600; margin:12px 0 16px; line-height:1.65; }
+.nav-btn { min-width:38px; padding:6px 8px; background:#eef1f5; border-radius:9px; font-size:13px; }
+.nav-btn.answered { background:#1a73ba; color:#fff; }
+.nav-btn.current { outline:3px solid #ffb5aa; box-shadow:0 0 0 4px rgba(255,181,170,.35); }
+.timer { font-size:26px; font-weight:700; font-variant-numeric:tabular-nums; letter-spacing:.5px; }
+table.domains th { background:#eef2f8; font-weight:700; }
+.score { font-size:48px; font-weight:800; background:linear-gradient(120deg,#1a73ba,#15243b); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+.review-item { border:1px solid #e3e8ef; border-radius:12px; padding:16px 18px; margin-bottom:14px; box-shadow:0 1px 4px rgba(16,24,40,.04); }
+.flashcard { background:linear-gradient(180deg,#ffffff,#f8fafc); border:1px solid #e3e8ef; border-radius:14px; padding:30px; min-height:150px; margin:16px 0; font-size:17px; box-shadow:0 2px 8px rgba(16,24,40,.05); }
+.tips h3 { margin-top:28px; padding-left:12px; border-left:4px solid #ff3621; }
+label { font-size:11.5px; font-weight:700; color:#667085; text-transform:uppercase; letter-spacing:.6px; }
+::-webkit-scrollbar { width:10px; height:10px; }
+::-webkit-scrollbar-thumb { background:#c9d3e0; border-radius:8px; border:2px solid #f4f6fa; }
 """
 
 # --------------------------------------------------------- AI PREP GUIDE
@@ -1523,16 +1548,27 @@ app.layout = html.Div(
                 dcc.Tabs(
                     id="tabs",
                     value="learn",
+                    className="tabbar",
                     children=[
-                        dcc.Tab(label="📚 Learn", value="learn"),
-                        dcc.Tab(label="⏱️ Practice Exams", value="exam"),
-                        dcc.Tab(label="💡 Tips & Tricks", value="tips"),
+                        dcc.Tab(
+                            label="📚 Learn",
+                            value="learn",
+                            className="tab-item",
+                            selected_className="tab-item--selected",
+                        ),
+                        dcc.Tab(
+                            label="⏱️ Practice Exams",
+                            value="exam",
+                            className="tab-item",
+                            selected_className="tab-item--selected",
+                        ),
+                        dcc.Tab(
+                            label="💡 Tips & Tricks",
+                            value="tips",
+                            className="tab-item",
+                            selected_className="tab-item--selected",
+                        ),
                     ],
-                    colors={
-                        "border": "#d5dbe4",
-                        "primary": "#1a73ba",
-                        "background": "#f2f4f7",
-                    },
                 ),
                 # ------------------------------------------------ LEARN
                 html.Div(
