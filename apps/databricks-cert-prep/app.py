@@ -2426,7 +2426,6 @@ def toggle_exam_views(mode):
     Input({"type": "exam-nav", "index": ALL}, "n_clicks"),
     Input("exam-retake", "n_clicks"),
     Input("exam-submit", "n_clicks"),
-    Input("exam-tick", "n_intervals"),
     State("exam-level", "value"),
     State("exam-num", "value"),
     State("exam-mins", "value"),
@@ -2437,7 +2436,7 @@ def toggle_exam_views(mode):
     State("exam-result", "data"),
 )
 def exam_mutate(
-    n_start, opt_value, _prev, _next, _pause, _nav, _retake, _submit, _tick,
+    n_start, opt_value, _prev, _next, _pause, _nav, _retake, _submit,
     level, num, mins, domain, difficulty, qset, state, result,
 ):
     tid = ctx.triggered_id
@@ -2526,17 +2525,6 @@ def exam_mutate(
         s["submitted"] = True
         return s, res, "results", True
 
-    if tid == "exam-tick":  # auto-submit when time runs out
-        if state.get("paused"):
-            return no_update
-        if state["deadline"] - time.time() <= 0:
-            res = compute_results(state)
-            save_attempt(state, res)
-            s = dict(state)
-            s["submitted"] = True
-            return s, res, "results", True
-        return no_update
-
     return no_update
 
 
@@ -2553,17 +2541,36 @@ def pause_label(state):
 @app.callback(
     Output("exam-timer", "children"),
     Output("exam-timer", "className"),
+    Output("exam-state", "data", allow_duplicate=True),
+    Output("exam-result", "data", allow_duplicate=True),
+    Output("exam-mode", "data", allow_duplicate=True),
+    Output("exam-tick", "disabled", allow_duplicate=True),
     Input("exam-tick", "n_intervals"),
     State("exam-state", "data"),
+    State("exam-result", "data"),
+    prevent_initial_call=True,
 )
-def tick_timer(_n, state):
-    if not state:
-        return "--:--", "timer"
+def tick_timer(_n, state, result):
+    """Timer display + auto-submit at zero. Kept OUT of exam_mutate on
+    purpose: a 1s interval as an extra input there made Dash consolidate
+    user clicks with ticks, silently dropping the clicks."""
+    if not state or result is not None or state.get("submitted"):
+        return no_update, no_update, no_update, no_update, no_update, no_update
     if state.get("paused"):
-        return f"⏸ {fmt_secs(state['remaining'])}", "timer paused"
+        return (
+            f"⏸ {fmt_secs(state['remaining'])}",
+            "timer paused",
+            no_update, no_update, no_update, no_update,
+        )
     remaining = state["deadline"] - time.time()
+    if remaining <= 0:  # time is up: auto-submit the exam
+        res = compute_results(state)
+        save_attempt(state, res)
+        s = dict(state)
+        s["submitted"] = True
+        return "00:00", "timer low", s, res, "results", True
     cls = "timer" + (" low" if remaining < 60 else "")
-    return fmt_secs(remaining), cls
+    return fmt_secs(remaining), cls, no_update, no_update, no_update, no_update
 
 
 @app.callback(
