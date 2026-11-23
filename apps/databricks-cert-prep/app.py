@@ -3254,6 +3254,7 @@ FEATURED_SETS = {
     "Expected Exam Bank — Complex Scenarios (45)",
     "Expected Exam Bank — Complex Scenarios 2 (45)",
     "Expected Exam Bank — Complex Scenarios 3 (45)",
+    "Expected Exam Bank — Complex Scenarios 4 (45)",
     "Official Practice Exam (Databricks Academy PDF)",
     "DataBricks-Practice-exam(1).pdf",
     "Generative AI Engineer — Expected Exam Bank (60)",
