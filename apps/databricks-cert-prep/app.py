@@ -350,44 +350,46 @@ CONCEPTS = {
 * Query profile for plans and stage timings; reading `EXPLAIN` output
 * Declarative Automation Bundle targets: same bundle, per-environment values, `bundle deploy --target prod`
 
+#### Data Modelling (6%)
+* Medallion architecture: bronze (raw, immutable) → silver (cleansed, conformed) → gold (consumption-ready business models)
+* Dimensional modelling: star schemas — a fact table of measures surrounded by dimension tables, denormalized on purpose
+* Slowly changing dimensions: SCD Type 1 (overwrite in place) vs Type 2 (close the old row, insert a new one) — typically a MERGE
+
 """,
     "genai": """### Orient — learning concepts by exam section (Generative AI Engineer)
 
-#### Generative AI Concepts (25%)
-* LLM fundamentals: tokens, context windows, temperature; embeddings turn text into vectors for similarity
-* Transformers predict the next token; hallucination, grounding, and prompt roles (system / user / developer)
-* The RAG pattern: retrieve relevant context, then generate; chunking strategies and their trade-offs
-* Choosing the approach: prompt vs RAG vs fine-tune vs agent
+#### Design Applications (14%)
+* Choose the right pattern for the use case: prompt engineering vs RAG vs fine-tuning vs agent
+* LLM fundamentals for design: tokens, context windows, temperature, embeddings, hallucination, grounding
+* Prompt roles (system / user / developer); the RAG pipeline order and chunking trade-offs
+* No-code lanes: Knowledge Assistant for RAG Q&A, AI Extract / AI Classify for document tasks
 
-#### The Databricks AI Platform (10%)
-* Model Serving endpoints: foundation models, external models, custom models
-* AI Playground and Agent Builder: from no-code exploration to low-code agents
-* AI functions in SQL (`ai_query`); MLflow for LLM applications
+#### Data Preparation (14%)
+* Text extraction and chunking strategies; one embedding model for both corpus and queries
+* Mosaic AI Vector Search: endpoints, Delta-sync vs direct vector indexes, continuous vs triggered sync
+* Preparing training and evaluation data: chat format, labeled examples, preference pairs, synthetic generation
+* AI functions in SQL (`ai_query`) for labeling and enrichment at scale
 
-#### Mosaic AI Vector Search (15%)
-* Vector Search endpoints and the two index types: Delta table sync vs direct vector index
-* Embedding models and the managed embedding pipeline; continuous vs triggered sync
-* Hybrid search (keyword + vector), similarity metrics, and metadata filters
+#### Application Development (30%)
+* Code-first agents with the Mosaic AI Agent Framework (LangChain / LangGraph)
+* Agent tools: Unity Catalog functions, model serving endpoints, parameterized SQL, Genie spaces
+* The driver (planner) LLM; structured outputs for downstream consumers
+* MLflow tracing and the review app for debugging agent steps
 
-#### Mosaic AI Agent Framework (20%)
-* Agent Builder (no-code) vs code-first agents (Mosaic AI Agent Framework / LangChain)
-* Driver agents and tools: UC functions, endpoints, parameterized SQL, Genie spaces
-* Structured outputs and review app; debugging agents in the playground
+#### Assembling and Deploying Apps (22%)
+* Model Serving endpoints: foundation, external, custom, and agent models; pay-per-token vs provisioned throughput
+* Deploying an agent from Agent Builder or the review app to a serving endpoint
+* Calling deployed apps: REST APIs and integration into downstream systems
 
-#### Mosaic AI Agent Evaluation (10%)
-* Evaluation sets: requests + expected responses, expected facts, and guidelines
+#### Governance (8%)
+* Unity Catalog governance for models, functions, agents, and vector indexes
+* Mosaic AI Gateway: rate limits, routing, guardrails, usage tracking, PII handling
+* External-model API keys in secret scopes — never in notebooks
+
+#### Evaluation and Monitoring (12%)
+* Evaluation sets: requests, expected responses, expected facts, and guidelines
 * Deterministic metrics (retrieval precision / recall) vs LLM-as-judge (correctness, groundedness)
-* MLflow tracing: every step of every agent run; exporting and comparing evaluations
-
-#### Fine-tuning and Custom Models (10%)
-* Approaches: continued pretraining, supervised fine-tuning, preference optimization
-* Data prep, training runs, registering and deploying the custom model
-* When fine-tuning actually helps (domain language, strict format compliance) vs RAG
-
-#### AI Governance and Deployment (10%)
-* Mosaic AI Gateway: rate limits, routing, guardrails, usage tracking
-* Unity Catalog governance for agents, functions, and models
-* Secrets and PII handling; external models and BYO endpoints
+* Comparing candidates in MLflow; monitoring quality and usage in production
 
 """,
 }
@@ -410,28 +412,31 @@ Any task you can't complete fluently is your next study target.""",
 
 1. Build a pipeline with expectations (`expect` + `expect_or_drop`) and inspect the metrics — *Data Transformation, Cleansing, and Quality*
 2. Create one streaming table and one materialized view in the same pipeline — *Data Ingestion & Acquisition*
-3. Run a streaming aggregation with a watermark on rate data — *Developing Code using Python and SQL*
-4. Backfill incrementally with `trigger(availableNow=True)` and a durable checkpoint — *Developing Code using Python and SQL*
+3. Run a streaming aggregation with a watermark on rate data — *Developing Code for Data Processing using Python and SQL*
+4. Backfill incrementally with `trigger(availableNow=True)` and a durable checkpoint — *Developing Code for Data Processing using Python and SQL*
 5. Read changes with `table_changes()` after an UPDATE — *Data Ingestion & Acquisition*
 6. Apply a row filter and a column mask using `is_account_group_member` — *Ensuring Data Security and Compliance*
 7. Create a table with liquid clustering + deletion vectors and compare MERGE cost — *Cost & Performance Optimisation*
 8. Initialize and deploy a bundle with `--target dev` — *Debugging and Deploying*
 9. Compare a shuffle join vs a broadcast join plan with `explain()` — *Cost & Performance Optimisation*
 10. Share a table with an internal recipient via Delta Sharing — *Data Sharing and Federation*
+11. Build a star-schema gold table and implement an SCD Type 2 MERGE on a dimension — *Data Modelling*
 
 Any task you can't complete fluently is your next study target.""",
     "genai": """Build every item below in your workspace (Free Edition or a free trial is enough; each task takes under 30 minutes):
 
-1. Open the AI Playground, chat with a foundation model, and change the system prompt + temperature — *Generative AI Concepts*
-2. Create a Model Serving endpoint for a foundation model and call it with a REST request — *The Databricks AI Platform*
-3. Call an AI function from SQL (`ai_query`) against a small table — *The Databricks AI Platform*
-4. Create a Vector Search endpoint and a vector index over a Delta table; run a similarity query with a filter — *Mosaic AI Vector Search*
-5. Build a RAG chatbot over a few documents in a volume (Knowledge Assistant or Agent Builder) — *Mosaic AI Agent Framework*
-6. Create an agent with a UC function tool and inspect its steps — *Mosaic AI Agent Framework*
-7. Run an evaluation with an AI judge on a small evaluation set — *Mosaic AI Agent Evaluation*
-8. Review MLflow traces for an agent run and export the results — *Mosaic AI Agent Evaluation*
-9. Check AI Gateway rate limits and usage tracking for an endpoint — *AI Governance and Deployment*
-10. Deploy an agent or assistant to a Model Serving endpoint — *AI Governance and Deployment*
+1. Sketch the pattern choice (prompt vs RAG vs fine-tune vs agent) for three of your own use cases — *Design Applications*
+2. Prototype the same prompt on two models in the AI Playground with temperature changes — *Design Applications*
+3. Chunk a PDF set into a volume and generate embeddings for Vector Search — *Data Preparation*
+4. Create a Vector Search endpoint and a Delta-sync index; run a similarity query with a metadata filter — *Data Preparation*
+5. Write a code-first agent with the Mosaic AI Agent Framework and a UC function tool — *Application Development*
+6. Force a structured JSON output and inspect the agent's MLflow trace in the review app — *Application Development*
+7. Wire a Genie space or parameterized SQL tool so answers match official metric definitions — *Application Development*
+8. Deploy an agent from the review app to a Model Serving endpoint and call it over REST — *Assembling and Deploying Apps*
+9. Compare foundation-model vs custom-endpoint cost models for the same workload — *Assembling and Deploying Apps*
+10. Register the agent in Unity Catalog and grant a group access to it — *Governance*
+11. Route calls through AI Gateway with a rate limit and guardrails — *Governance*
+12. Build an evaluation set with expected facts and run LLM-as-judge metrics; compare two versions — *Evaluation and Monitoring*
 
 Any task you can't complete fluently is your next study target.""",
 }
@@ -2448,6 +2453,362 @@ every call audited, rate-limited, and logged.
 ✅ **Serve the external model behind a Databricks endpoint with the key in a secret scope — one governed, audited front door.** Traps: "a shared keys spreadsheet" (no), "hardcode keys as notebook variables" (the problem, restated), "each user registers their own model" (ungoverned sprawl).""",
         },
     ],
+    (
+        "professional",
+        "Data Modelling (6%)",
+    ): [
+        {
+            "title": "Concept 1 — Medallion architecture: what lives in each layer",
+            "section": "Data Modelling (6%)",
+            "body": """**Why it matters for the exam:** every pipeline scenario assumes you know where each model belongs. **Bronze** holds raw, immutable data exactly as it landed. **Silver** holds cleansed, deduplicated, conformed entities — one trusted version of each business object. **Gold** holds consumption-ready business models: aggregates, star schemas, and feature tables shaped for dashboards and ML. Data flows bronze → silver → gold, refined at every hop.
+
+**Simple example**
+```python
+# silver: conform + dedup, keep detail
+orders_silver = (orders_bronze
+    .dropDuplicates(["order_id"])
+    .withColumn("order_ts", F.to_timestamp("order_ts")))
+
+# gold: business aggregate shaped for the question
+orders_gold = (orders_silver
+    .groupBy("customer_id", F.date_trunc("month", "order_ts").alias("month"))
+    .agg(F.sum("amount").alias("revenue")))
+```
+
+**How the exam asks it**
+> A revenue dashboard by region and month should read from which layer?
+
+✅ **Gold — consumption-ready aggregates shaped for the business question.** Traps: "bronze, raw data is safest" (nobody reports off raw), "silver, it's already clean" (silver is conformed detail, not aggregates).""",
+        },
+        {
+            "title": "Concept 2 — Star schemas: facts, dimensions, denormalization",
+            "section": "Data Modelling (6%)",
+            "body": """**Why it matters for the exam:** gold-layer reporting models are usually **dimensional**. A **fact table** stores numeric measures of events (order lines, quantities, revenue) plus foreign keys to dimensions. A **dimension table** stores descriptive context (customer, product, date). A **star schema** joins one fact to many dimensions and is deliberately **denormalized** — descriptive attributes are repeated in dimensions instead of being normalized away. Fewer joins mean predictable, fast BI queries; fully normalized ("snowflaked") models save storage but slow dashboards down.
+
+**Simple example**
+```sql
+CREATE TABLE gold.fact_orders (
+  order_id BIGINT, customer_key INT, product_key INT,
+  order_date DATE, quantity INT, revenue DECIMAL(10, 2)
+);
+
+CREATE TABLE gold.dim_customer (
+  customer_key INT, name STRING, region STRING, segment STRING
+);
+```
+
+**How the exam asks it**
+> Why do gold-layer models favor denormalized star schemas over normalized (3NF) models?
+
+✅ **Fewer joins — BI queries over measures plus descriptive attributes stay fast and simple.** Traps: "3NF improves data quality", "normalization saves enough storage to matter" (storage is cheap, joins are not).""",
+        },
+        {
+            "title": "Concept 3 — SCD Type 1 vs Type 2: dimension history",
+            "section": "Data Modelling (6%)",
+            "body": """**Why it matters for the exam:** dimension attributes change, and the exam tests whether history is preserved. **SCD Type 1** overwrites the old value in place — the table stays small but the past is lost. **SCD Type 2** keeps history: close the current row (set `valid_to`) and insert a new row with `valid_from` — reports "as of" a past date stay reproducible. On Databricks both are typically implemented with **MERGE** into the dimension table.
+
+**Simple example**
+```sql
+-- close the old current row when the region changes
+MERGE INTO gold.dim_customer t
+USING updates s
+  ON t.customer_key = s.customer_key AND t.is_current
+WHEN MATCHED AND t.region <> s.region
+  THEN UPDATE SET is_current = false, valid_to = current_date();
+-- the new current row is inserted with is_current = true
+```
+
+**How the exam asks it**
+> Marketing must report customers by the region they were assigned to at order time. Which SCD type is required?
+
+✅ **SCD Type 2 — every change keeps a history row with validity dates.** Traps: "Type 1 with an audit log" (joins won't reconstruct history), "daily full snapshots" (wasteful and hard to join).""",
+        },
+    ],
+    (
+        "genai",
+        "Design Applications (14%)",
+    ): [
+        {
+            "title": "Concept 1 — Choosing the pattern: prompt, RAG, fine-tune, or agent",
+            "section": "Design Applications (14%)",
+            "body": """**Why it matters for the exam:** the first design decision, and a favorite scenario question. Rules of thumb: instructions only → **prompt engineering**; answers must reflect knowledge that **changes often** → **RAG** (retrieval always fetches the current version — no retraining); the model must master **domain language** or emit a **strict output format** → **fine-tuning**; the task needs **multiple steps, tools, or external lookups** → an **agent**.
+
+**Simple example**
+```
+Knowledge changes daily (policies, prices)  → RAG + a synced index
+Needs DB lookups / API calls / branching     → agent with tools
+Company tone or strict JSON format           → fine-tuning (SFT / DPO)
+Just "answer using these rules"              → prompt engineering
+```
+
+**How the exam asks it**
+> Product policies change weekly and answers must always match the latest published version. Which approach fits?
+
+✅ **RAG — retrieval fetches the current policy at question time; fine-tuning freezes knowledge at training time.** Traps: "fine-tune every week" (costly and stale between runs), "a longer system prompt with the policy pasted in" (manual, drifts).""",
+        },
+        {
+            "title": "Concept 2 — Grounding, hallucination, and prompt roles",
+            "section": "Design Applications (14%)",
+            "body": """**Why it matters for the exam:** **hallucination** is a model confidently inventing content (a refund policy that doesn't exist). The standard fix is **grounding**: retrieve the relevant context (RAG) and instruct the model to answer only from it. Prompt **roles** structure the conversation: the **system** prompt carries persistent operating instructions ("You are a support agent; never reveal internal data"), the **user** prompt carries the request. Long conversations that "forget" earlier instructions are hitting the **context window** — compact or truncate history.
+
+**Simple example**
+```python
+messages = [
+    {"role": "system", "content": "You are a support agent. Answer ONLY from the "
+     "retrieved policy context. Cite the section."},
+    {"role": "user", "content": "What is the refund window?"},
+]   # retrieved policy chunks are injected into the context
+```
+
+**How the exam asks it**
+> A chatbot invents a refund policy. Which concept describes this, and what is the standard fix?
+
+✅ **Hallucination — fix it with grounding: retrieve the real policy and constrain answers to that context.** Traps: "raise the temperature" (increases invention), "use a bigger context window" (doesn't add facts).""",
+        },
+    ],
+    (
+        "genai",
+        "Data Preparation (14%)",
+    ): [
+        {
+            "title": "Concept 1 — Chunking and embeddings: retrieval quality is decided here",
+            "section": "Data Preparation (14%)",
+            "body": """**Why it matters for the exam:** if retrieval fails, the LLM never sees the answer. **Chunking**: split too small and the answer's context is severed mid-thought; too large and noise drowns the signal. Fixed-size character splits cut sentences and tables apart — prefer **structure-aware** chunking (sections, paragraphs, table rows). **Embeddings** turn chunks into vectors so semantically similar text lands close together — "expense reimbursement" matches a document titled "Employee cost claims" where keyword search fails. Use **one embedding model** for the corpus and the queries; mixing models produces meaningless results.
+
+**Simple example**
+```python
+# structure-aware: split on headings, not characters
+chunks = [c for section in doc.sections
+          for c in section.split(max_tokens=350, overlap=50)]
+
+# the SAME model embeds the corpus and every future query
+vectors = embedding_model.encode(chunks)
+```
+
+**How the exam asks it**
+> Retrieval returns the chunk containing the answer, but the LLM still says it can't find it. Chunks were split at fixed 50-character boundaries. Most likely fix?
+
+✅ **Re-chunk structure-aware and larger, so sentences and tables stay intact.** Traps: "raise the temperature", "add more documents" (retrieval, not volume, is the problem).""",
+        },
+        {
+            "title": "Concept 2 — Vector Search: index types, sync modes, stale data",
+            "section": "Data Preparation (14%)",
+            "body": """**Why it matters for the exam:** a **Vector Search endpoint** plus an **index** is all a setup needs. Two index types: **Delta Sync** indexes update automatically from a source Delta table — **continuous** sync tracks it near-real-time, **triggered** sync refreshes on schedule or on demand; **direct vector** indexes take vectors you push yourself (any source, you own the lifecycle). The managed embedding pipeline can embed text columns for you. Staleness almost always means the sync mode is wrong for the update cadence.
+
+**Simple example**
+```python
+vs.create_index(
+    name="policy_index",
+    endpoint_name="vs_endpoint",
+    source_table="main.policy.chunks",      # Delta Sync index
+    pipeline_type="CONTINUOUS",             # follows the table
+    primary_key="chunk_id",
+    embedding_source_columns=["text"],       # managed embeddings
+)
+```
+
+**How the exam asks it**
+> A nightly job rebuilds the index over a table that updates hourly; users see stale results. Best fix?
+
+✅ **A Delta-sync index in continuous mode (or syncs triggered per update) so the index tracks the table.** Trap: "rebuild more often manually" — continuous sync exists precisely for this.""",
+        },
+    ],
+    (
+        "genai",
+        "Application Development (30%)",
+    ): [
+        {
+            "title": "Concept 1 — Agents: the driver LLM and its tools",
+            "section": "Application Development (30%)",
+            "body": """**Why it matters for the exam:** what makes an **agent** more than a single LLM call: a **driver (planner) LLM** that loops *plan → tool call → observe → answer*, plus **tools** it can invoke — Unity Catalog functions, model serving endpoints, parameterized SQL, and Genie spaces. An agent with no tool for the data it needs will invent answers (order statuses, for example); wiring the tool completes it. Choose the lane by need: **Agent Builder** for no-code, **code-first Mosaic AI Agent Framework** for custom multi-step logic, custom guardrails, and an evaluation harness in CI.
+
+**Simple example**
+```python
+tools = [
+    uc_tool("main.finance.revenue_by_region"),   # governed UC function
+    genie_tool(space_id="..."),                   # certified Q&A over data
+    endpoint_tool("llm-openai"),                  # a served model
+]
+agent = build_agent(driver_llm, tools, system_prompt)  # plans and calls tools
+```
+
+**How the exam asks it**
+> A support agent invents order statuses; orders live in a table. What completes the agent?
+
+✅ **Add a tool (e.g., a UC function over the orders table) the driver can call, so answers come from real data.** Traps: "a longer system prompt" (still guessing), "fine-tune on order data" (stale instantly).""",
+        },
+        {
+            "title": "Concept 2 — Unity Catalog functions as governed agent tools",
+            "section": "Application Development (30%)",
+            "body": """**Why it matters for the exam:** why attach tools as **Unity Catalog functions** instead of raw code strings: **governed permissions** (a caller without rights to the underlying data is refused — the agent is not a privilege-escalation bypass), **audited** invocations, and **discoverable, reusable** tools shared across agents. A sales agent that must report revenue "exactly as finance defines it" gets a certified UC function or a Genie space — not free-form SQL.
+
+**Simple example**
+```sql
+CREATE OR REPLACE FUNCTION main.finance.revenue_by_region(region STRING)
+RETURNS DECIMAL(18, 2)
+RETURN SELECT SUM(revenue) FROM gold.fact_revenue WHERE region = region;
+-- then: GRANT EXECUTE ON FUNCTION ... TO `sales-team`
+```
+
+**How the exam asks it**
+> A user without SELECT on the claims table asks an agent (whose tool is a UC function over claims) for claim details. What happens?
+
+✅ **Unity Catalog enforces the function's permissions — the call is refused / returns no rows.** Traps: "the agent answers anyway" (that's the ungoverned raw-code case), "the agent's identity bypasses grants" (it doesn't).""",
+        },
+        {
+            "title": "Concept 3 — Structured outputs and MLflow tracing",
+            "section": "Application Development (30%)",
+            "body": """**Why it matters for the exam:** when a downstream system consumes the agent's reply, free text is not safe — **structured outputs** constrain generation to a schema so the JSON shape is guaranteed. When the agent is wrong, don't guess: **MLflow tracing** records every step of every run (driver decisions, tool inputs and outputs), and the **review app** visualizes the traces so you can see exactly which step failed — retrieval, the wrong tool, or the final answer.
+
+**Simple example**
+```python
+from pydantic import BaseModel
+
+class OrderReply(BaseModel):
+    status: str
+    eta_days: int
+
+agent = agent.with_structured_output(OrderReply)   # shape guaranteed
+# every run is traced: inspect the steps in the review app / MLflow
+```
+
+**How the exam asks it**
+> A trace shows retrieval returning irrelevant chunks; the driver then invents an answer. What is the root fix?
+
+✅ **Fix retrieval (chunking, embeddings, filters) — the downstream LLM can only work with what retrieval returns.** Trap: "rewrite the system prompt" — no prompt fixes empty retrieval.""",
+        },
+    ],
+    (
+        "genai",
+        "Assembling and Deploying Apps (22%)",
+    ): [
+        {
+            "title": "Concept 1 — Serving endpoints and their cost models",
+            "section": "Assembling and Deploying Apps (22%)",
+            "body": """**Why it matters for the exam:** endpoint flavors and how they bill. **Foundation-model** and **external-model** endpoints serve pay-per-token and scale with traffic. **Custom-model** endpoints run on **provisioned throughput** — dedicated capacity billed while provisioned, even idle. Match the cost model to the traffic pattern: spiky or low traffic → pay-per-token; steady, high volume or low-latency requirements → provisioned throughput. A custom endpoint's bill staying flat while idle is expected behavior, not a bug.
+
+**Simple example**
+```
+Foundation / external model endpoint → pay-per-token, scales with demand
+Custom model endpoint → provisioned throughput, billed while up
+Agent endpoint → the deployed agent, called like any serving endpoint
+```
+
+**How the exam asks it**
+> Why does a custom-model endpoint cost the same while idle as under load?
+
+✅ **Provisioned throughput reserves dedicated compute for the endpoint — you pay for capacity, not tokens.** Traps: "a billing error", "autoscaling isn't enabled" (that's foundation-model behavior).""",
+        },
+        {
+            "title": "Concept 2 — Deploy: review app to endpoint to REST",
+            "section": "Assembling and Deploying Apps (22%)",
+            "body": """**Why it matters for the exam:** how a finished agent reaches users. Build and debug in the **review app** (or Agent Builder), then **deploy** it — the agent is registered and served behind a **Model Serving endpoint**. External applications integrate by calling the endpoint's **REST API** (`/api/2.0/serving-endpoints/<name>/invocations`) with an auth token. A fine-tuned custom model follows the same last mile: register it, then serve it — registration and deployment must happen before users are switched over.
+
+**Simple example**
+```bash
+curl -X POST "$HOST/api/2.0/serving-endpoints/support-agent/invocations" -H "Authorization: Bearer $TOKEN" -d '{"messages": [{"role": "user", "content": "Where is my order?"}]}'
+```
+
+**How the exam asks it**
+> How does a finished Agent Builder assistant become available to an external web application?
+
+✅ **Deploy it to a Model Serving endpoint and call the endpoint's REST API.** Traps: "share the review-app link" (internal tooling), "export the notebook" (not a service).""",
+        },
+    ],
+    (
+        "genai",
+        "Governance (8%)",
+    ): [
+        {
+            "title": "Concept 1 — Governing AI assets in Unity Catalog",
+            "section": "Governance (8%)",
+            "body": """**Why it matters for the exam:** on Databricks, AI assets are **Unity Catalog** assets — models, functions, agents, and vector indexes each have an owner, grants, and lineage. Granting a group access to an agent means granting the underlying UC objects; the same permission model that protects tables protects AI. Deployed agents are registered (for example with MLflow) in UC so governance follows them to the endpoint.
+
+**Simple example**
+```sql
+GRANT EXECUTE ON FUNCTION main.finance.revenue_by_region TO `support-team`;
+-- and access to the served agent itself is granted the same way
+```
+
+**How the exam asks it**
+> Which system governs access to agent tools, vector indexes, and models on Databricks?
+
+✅ **Unity Catalog — one ownership and grants model across all AI and data assets.** Traps: "the AI Gateway" (it governs traffic, not permissions), "workspace-local ACLs" (pre-UC thinking).""",
+        },
+        {
+            "title": "Concept 2 — Mosaic AI Gateway, guardrails, and secrets",
+            "section": "Governance (8%)",
+            "body": """**Why it matters for the exam:** the **AI Gateway** is the governed front door for model calls: **routing** across providers, **rate limits** (the answer to "a buggy agent looped all day burning tokens"), **usage tracking**, and **guardrails** that filter unsafe input and output and can flag PII. External-model API keys never live in notebooks — they live in **secret scopes** referenced once by the endpoint, so every call is audited and key rotation is a single operation.
+
+**Simple example**
+```
+dbutils.secrets.get('openai', 'api_key') → configured once on the endpoint
+notebooks call endpoint 'llm-openai' — no keys in code, all calls audited
+```
+
+**How the exam asks it**
+> External-model API keys are pasted across many notebooks. What is the governed fix?
+
+✅ **Serve the external model behind a Databricks endpoint with the key in a secret scope — one governed, audited front door.** Traps: "a shared keys spreadsheet", "hardcode keys as variables" (the problem, restated).""",
+        },
+    ],
+    (
+        "genai",
+        "Evaluation and Monitoring (12%)",
+    ): [
+        {
+            "title": "Concept 1 — Evaluation sets: responses, facts, and guidelines",
+            "section": "Evaluation and Monitoring (12%)",
+            "body": """**Why it matters for the exam:** an **evaluation set** is the ruler for agent quality: representative **requests**, plus **expected responses** or **expected facts**, plus **guidelines**. Prefer **expected facts** over exact expected responses — many phrasings are correct; facts pin the content that must appear ("30 days", "unused items"). **Guidelines** tell the judge what "good" means ("cite the policy section", "never mention internal tools").
+
+**Simple example**
+```python
+eval_set = [{
+    "request": "What is the refund window?",
+    "expected_facts": ["30 days", "unused items"],
+    "guidelines": ["Cite the policy section"],
+}]
+```
+
+**How the exam asks it**
+> Why define expected facts instead of one exact expected response?
+
+✅ **Correct answers vary in wording; facts pin the required content without punishing phrasing.** Trap: "exact responses make judges deterministic" (they don't — and they fail every paraphrase).""",
+        },
+        {
+            "title": "Concept 2 — Deterministic metrics vs LLM-as-judge",
+            "section": "Evaluation and Monitoring (12%)",
+            "body": """**Why it matters for the exam:** two metric families. **Deterministic** metrics need no LLM opinion — retrieval precision/recall, latency, token counts — computed straight from trace data. **LLM-as-judge** metrics score qualities a formula can't: **correctness** (is the answer right?) and **groundedness** (does the answer stick to the retrieved context?). A factually correct answer citing details absent from the context fails **groundedness** — the classic judge scenario.
+
+**Simple example**
+```
+deterministic: retrieval precision / recall, latency, cost per request
+judge:         correctness, groundedness, guideline adherence
+```
+
+**How the exam asks it**
+> An answer is factually correct but cites details that are not in the retrieved context. Which judge metric failed?
+
+✅ **Groundedness.** Traps: "correctness" (it was correct), "retrieval recall" (deterministic, and retrieval did return context).""",
+        },
+        {
+            "title": "Concept 3 — Comparing candidates and monitoring production",
+            "section": "Evaluation and Monitoring (12%)",
+            "body": """**Why it matters for the exam:** never pick a model or agent version by vibes. Run both candidates on the **same evaluation set**, then compare judge metrics and deterministic metrics (latency, cost) side by side in **MLflow** — export the runs and the traces to justify the choice. Once live, **monitor** quality drift, usage, and latency so degradations are caught before users report them; re-run the evaluation set on every candidate change.
+
+**Simple example**
+```python
+with mlflow.start_run(run_name="agent-v2"):
+    results = mlflow.evaluate(agent_v2, eval_set, model_type="databricks-agent")
+    # compare with the v1 run: correctness, groundedness, latency, cost
+```
+
+**How the exam asks it**
+> Two foundation models are candidates for an agent. How do you choose objectively?
+
+✅ **Run both on the same evaluation set and compare judge + deterministic metrics in MLflow.** Traps: "pick the newest model", "A/B in production first" (no ground truth).""",
+        },
+    ],
 }
 
 
@@ -3257,8 +3618,8 @@ FEATURED_SETS = {
     "Expected Exam Bank — Complex Scenarios 4 (45)",
     "Official Practice Exam (Databricks Academy PDF)",
     "DataBricks-Practice-exam(1).pdf",
-    "Generative AI Engineer — Expected Exam Bank (60)",
-    "Data Engineer Professional — Core Bank (33)",
+    "Generative AI Engineer — Expected Exam Bank (66)",
+    "Data Engineer Professional — Core Bank (37)",
 }
 
 
