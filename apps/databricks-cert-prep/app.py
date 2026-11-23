@@ -3257,6 +3257,7 @@ FEATURED_SETS = {
     "Official Practice Exam (Databricks Academy PDF)",
     "DataBricks-Practice-exam(1).pdf",
     "Generative AI Engineer — Expected Exam Bank (60)",
+    "Data Engineer Professional — Core Bank (33)",
 }
 
 
@@ -3274,15 +3275,17 @@ FEATURED_SETS = {
 def exam_filter_options(level, domain, difficulty, qset):
     if ctx.triggered_id == "exam-level":
         domain = "All domains"
+        qset = "All sets"
     doms = ["All domains"] + SECTIONS.get(level or "associate", [])
     domain = domain if domain in doms else "All domains"
+    pool = [q for q in get_bank()["questions"] if q["cert_level"] == level]
+    # only featured sets that actually have questions for the chosen level
     sets = ["All sets"] + sorted(
         s
-        for s in {q["source"] for q in get_bank()["questions"] if q["source"]}
+        for s in {q["source"] for q in pool if q["source"]}
         if s in FEATURED_SETS
     )
     qset = qset if qset in sets else "All sets"
-    pool = [q for q in get_bank()["questions"] if q["cert_level"] == level]
     if qset != "All sets":
         pool = [q for q in pool if q["source"] == qset]
     if domain != "All domains":
