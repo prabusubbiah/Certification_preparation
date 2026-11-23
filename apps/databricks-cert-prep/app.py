@@ -1,5 +1,6 @@
 """Databricks Cert Prep — trainer for the Databricks Data Engineer
-Associate and Data Engineer Professional certifications.
+Associate and Data Engineer Professional certifications, plus the
+Generative AI Engineer Associate certification.
 
 Three areas:
   1. Learn         — flashcards by certification and exam domain
@@ -35,9 +36,10 @@ ATTEMPTS_TABLE = f"{CATALOG}.{SCHEMA}.attempts"
 LEVELS = [
     {"label": "Data Engineer Associate", "value": "associate"},
     {"label": "Data Engineer Professional", "value": "professional"},
+    {"label": "Generative AI Engineer Associate", "value": "genai"},
 ]
 PASS_PCT = 70.0
-EXAM_DEFAULTS = {"associate": 45, "professional": 60}
+EXAM_DEFAULTS = {"associate": 45, "professional": 60, "genai": 45}
 
 # ------------------------------------------------------------------ spark
 _spark = None
@@ -349,6 +351,45 @@ CONCEPTS = {
 * Declarative Automation Bundle targets: same bundle, per-environment values, `bundle deploy --target prod`
 
 """,
+    "genai": """### Orient — learning concepts by exam section (Generative AI Engineer)
+
+#### Generative AI Concepts (25%)
+* LLM fundamentals: tokens, context windows, temperature; embeddings turn text into vectors for similarity
+* Transformers predict the next token; hallucination, grounding, and prompt roles (system / user / developer)
+* The RAG pattern: retrieve relevant context, then generate; chunking strategies and their trade-offs
+* Choosing the approach: prompt vs RAG vs fine-tune vs agent
+
+#### The Databricks AI Platform (10%)
+* Model Serving endpoints: foundation models, external models, custom models
+* AI Playground and Agent Builder: from no-code exploration to low-code agents
+* AI functions in SQL (`ai_query`); MLflow for LLM applications
+
+#### Mosaic AI Vector Search (15%)
+* Vector Search endpoints and the two index types: Delta table sync vs direct vector index
+* Embedding models and the managed embedding pipeline; continuous vs triggered sync
+* Hybrid search (keyword + vector), similarity metrics, and metadata filters
+
+#### Mosaic AI Agent Framework (20%)
+* Agent Builder (no-code) vs code-first agents (Mosaic AI Agent Framework / LangChain)
+* Driver agents and tools: UC functions, endpoints, parameterized SQL, Genie spaces
+* Structured outputs and review app; debugging agents in the playground
+
+#### Mosaic AI Agent Evaluation (10%)
+* Evaluation sets: requests + expected responses, expected facts, and guidelines
+* Deterministic metrics (retrieval precision / recall) vs LLM-as-judge (correctness, groundedness)
+* MLflow tracing: every step of every agent run; exporting and comparing evaluations
+
+#### Fine-tuning and Custom Models (10%)
+* Approaches: continued pretraining, supervised fine-tuning, preference optimization
+* Data prep, training runs, registering and deploying the custom model
+* When fine-tuning actually helps (domain language, strict format compliance) vs RAG
+
+#### AI Governance and Deployment (10%)
+* Mosaic AI Gateway: rate limits, routing, guardrails, usage tracking
+* Unity Catalog governance for agents, functions, and models
+* Secrets and PII handling; external models and BYO endpoints
+
+""",
 }
 
 HANDSON = {
@@ -377,6 +418,20 @@ Any task you can't complete fluently is your next study target.""",
 8. Initialize and deploy a bundle with `--target dev` — *Debugging and Deploying*
 9. Compare a shuffle join vs a broadcast join plan with `explain()` — *Cost & Performance Optimisation*
 10. Share a table with an internal recipient via Delta Sharing — *Data Sharing and Federation*
+
+Any task you can't complete fluently is your next study target.""",
+    "genai": """Build every item below in your workspace (Free Edition or a free trial is enough; each task takes under 30 minutes):
+
+1. Open the AI Playground, chat with a foundation model, and change the system prompt + temperature — *Generative AI Concepts*
+2. Create a Model Serving endpoint for a foundation model and call it with a REST request — *The Databricks AI Platform*
+3. Call an AI function from SQL (`ai_query`) against a small table — *The Databricks AI Platform*
+4. Create a Vector Search endpoint and a vector index over a Delta table; run a similarity query with a filter — *Mosaic AI Vector Search*
+5. Build a RAG chatbot over a few documents in a volume (Knowledge Assistant or Agent Builder) — *Mosaic AI Agent Framework*
+6. Create an agent with a UC function tool and inspect its steps — *Mosaic AI Agent Framework*
+7. Run an evaluation with an AI judge on a small evaluation set — *Mosaic AI Agent Evaluation*
+8. Review MLflow traces for an agent run and export the results — *Mosaic AI Agent Evaluation*
+9. Check AI Gateway rate limits and usage tracking for an endpoint — *AI Governance and Deployment*
+10. Deploy an agent or assistant to a Model Serving endpoint — *AI Governance and Deployment*
 
 Any task you can't complete fluently is your next study target.""",
 }
@@ -2003,6 +2058,396 @@ q.lastProgress   # batch duration, inputRowsPerSecond, stateOperators — the tr
 ✅ **Read the streaming progress metrics (input vs processed rows, batch duration, state size) — or the pipeline event log — to see what it's actually doing.** Traps: "restart and watch" (no evidence), "delete the checkpoint" (reprocesses and duplicates), "increase the trigger rate" (masks the symptom).""",
         },
     ],
+    (
+        "genai",
+        "Generative AI Concepts (25%)",
+    ): [
+        {
+            "title": "Concept 1 — How an LLM actually works: predicting the next token",
+            "section": "Generative AI Concepts (25%)",
+            "body": """**Why it matters for the exam:** An LLM is not a database you query — it's a next-token predictor. It reads your prompt as a sequence of **tokens** (word fragments), and generates a continuation, one token at a time, each time picking from a probability distribution. Two settings control that picking: **temperature** — how adventurous the choices are (0 = nearly deterministic, same prompt ≈ same answer; high = creative/varied), and the **context window** — how many tokens of prompt + history the model can "see" at once; exceed it and the earliest content falls out of scope. Exam questions describe a behavior ("answers vary wildly at temperature 1.0", "the model forgot the first instruction") and expect you to name the cause (temperature, context window).
+
+**Worked example (scenario)**
+```text
+Prompt: "Summarize this contract in 3 bullets."
+Temperature 0 → same 3 bullets every run (reliable pipelines)
+Temperature 0.8+ → different phrasing/runs (creative writing)
+Long chat → "the model ignored my first instruction" = context window overflow
+```
+
+**How the exam asks it**
+> A production agent must give stable, repeatable answers. Which setting guarantees that?
+
+✅ **Low temperature (≈0) — near-deterministic token choice; and keep prompts within the context window so nothing "falls out".** Traps: "increase the context window so answers stabilize" (unrelated), "rerun and majority-vote" (wasteful workaround), "temperature 1.0 with a stronger model" (still varies).""",
+        },
+        {
+            "title": "Concept 2 — Hallucination and grounding: why RAG exists",
+            "section": "Generative AI Concepts (25%)",
+            "body": """**Why it matters for the exam:** An LLM always produces *fluent* text — even when it has no idea what the truth is. A confident, invented answer is a **hallucination**, and it happens because the model only knows what it saw during training, not your private data. The cure is **grounding**: give the model the relevant facts in the prompt and instruct it to answer only from them. That's the whole idea of **RAG (retrieval-augmented generation)** — retrieve relevant documents, put them in the context, generate the answer from them. Know the distinction: fine-tuning teaches style/domain language; RAG supplies facts. Fresh data → RAG, not fine-tuning.
+
+**Worked example (scenario)**
+```text
+RAG flow: user asks → search docs for relevant chunks →
+prompt = "Answer ONLY from the provided context: [chunks]" → grounded answer.
+No retrieval: model invents a plausible policy number = hallucination.
+```
+
+**How the exam asks it**
+> A support bot keeps inventing refund policies. What fixes it?
+
+✅ **Ground the answers with RAG — retrieve the real policy text and instruct the model to answer only from it.** Traps: "fine-tune on policy documents" (teaches language, not facts — goes stale), "lower the temperature" (fluent lies stay fluent), "add a disclaimer" (hides the problem).""",
+        },
+        {
+            "title": "Concept 3 — Embeddings: meaning as coordinates",
+            "section": "Generative AI Concepts (25%)",
+            "body": """**Why it matters for the exam:** An **embedding model** converts any piece of text into a long list of numbers (a vector) with a magical property: texts with similar *meaning* end up close together in that number-space — even when they share no words. "How do I reset my password?" sits near "password recovery steps". This is what makes semantic search possible: instead of matching keywords, you match *meaning* by comparing vectors. This concept powers Vector Search, RAG retrieval, and similarity recommendations — the exam asks you to recognize when embeddings are the tool.
+
+**Worked example (scenario)**
+```text
+"The battery lasts ten hours"  → [0.12, -0.53, 0.88, ...]
+"Battery life is excellent"   → nearby vector  (similar meaning)
+"The screen is bright"        → far vector     (different topic)
+Search = find stored vectors nearest the question's vector.
+```
+
+**How the exam asks it**
+> Users search "expense reimbursement" but the policy is titled "employee cost claims". Keyword search finds nothing. What enables the match?
+
+✅ **Embeddings — semantic similarity search matches meaning, not words.** Traps: "a keyword index with synonyms" (manual, brittle), "ask the LLM to guess" (hallucination), "fine-tuning" (different purpose).""",
+        },
+        {
+            "title": "Concept 4 — Chunking: how you cut documents decides what you find",
+            "section": "Generative AI Concepts (25%)",
+            "body": """**Why it matters for the exam:** RAG can only retrieve what a retriever can *see*, and it sees **chunks** — the pieces you split documents into. Split too small: each chunk loses context, the retriever returns fragments that don't answer anything. Split too big: each chunk buries the answer in noise and the context window fills with filler. Good defaults: chunk by structure (headings, sections, paragraphs) with some overlap, so no idea gets cut in half. The exam frames it as a symptom — "retrieved chunks lack context" (too small) or "chunks exceed the context budget" (too big).
+
+**Worked example (scenario)**
+```text
+A 40-page policy → split at each section heading,
+chunks of ~400-600 tokens with 50-100 tokens overlap.
+A table split mid-row = unretrievable; keep tables whole.
+```
+
+**How the exam asks it**
+> Retrieval returns text that contains the answer but the LLM says it can't find it. Why?
+
+✅ **Chunking problem — likely chunks are too small or split mid-idea, so the retrieved chunk lacks the needed context; re-chunk with structure + overlap.** Traps: "raise the temperature" (unrelated), "a bigger model" (doesn't fix retrieval), "index the raw file whole" (one giant chunk = noise).""",
+        },
+    ],
+    (
+        "genai",
+        "The Databricks AI Platform (10%)",
+    ): [
+        {
+            "title": "Concept 1 — Model Serving endpoints: the three kinds of models",
+            "section": "The Databricks AI Platform (10%)",
+            "body": """**Why it matters for the exam:** Everything on Databricks AI is served through a **Model Serving endpoint** — but exams test what's *behind* it. Three flavors: **foundation models** (Databricks-hosted — pay per token, no infrastructure), **external models** (OpenAI, Anthropic, etc. — via gateway, keys stored for you), **custom models** (your own, from MLflow — provisioned compute with autoscaling, all-inclusive hourly cost). Cost model differs: token-based vs compute-based — a classic exam pairing. And in SQL, **`ai_query`** sends table data through any of these endpoints from a plain SELECT — AI functions without leaving the warehouse.
+
+**Worked example (scenario)**
+```sql
+-- sentiment over a table column via a serving endpoint
+SELECT ai_query('databricks-meta-llama-3-1-8b', review_text,
+                 returnType => 'BOOLEAN') AS positive
+FROM product_reviews;
+```
+
+**How the exam asks it**
+> Score 10M review rows with an LLM from SQL — what's the mechanism?
+
+✅ **ai_query against a Model Serving endpoint — batch LLM calls straight from SQL.** Traps: "export to pandas and loop" (no scale), "copy reviews into the chat UI" (manual), "build a Spark UDF that calls a laptop" (no).""",
+        },
+        {
+            "title": "Concept 2 — AI Playground and Agent Builder: the no-code ladder",
+            "section": "The Databricks AI Platform (10%)",
+            "body": """**Why it matters for the exam:** Databricks gives you a ladder from no-code to full-code. The **AI Playground** — chat with foundation models, try prompts and parameters, compare models side by side. **Agent Builder / Mosaic AI Agent Studio** — build a full RAG chatbot or agent visually: pick a foundation model, attach knowledge sources (volumes, tables, sites), add tools and index them, then chat, debug, and eventually **deploy** it as a serving endpoint. The exam wants you to know where each tool sits: prototype a prompt → playground; build a grounded assistant without writing code → Agent Builder; full custom logic in Python → the Agent Framework.
+
+**Worked example (scenario)**
+```text
+Playground → "which model handles summarization best?" (compare + tune)
+Agent Builder → grounded HR-policy Q&A bot over a UC volume of PDFs,
+                no code, deploy → endpoint 'hr-assistant'
+```
+
+**How the exam asks it**
+> An analyst needs a Q&A bot over 50 policy PDFs with zero coding.
+
+✅ **Agent Builder (Mosaic AI Agent Studio) — attach the volume as knowledge, deploy the assistant.** Traps: "write a LangChain app" (code — unnecessary), "use the playground" (chat only, not deployable, no attached knowledge at scale), "fine-tune a model on the PDFs" (wrong tool).""",
+        },
+    ],
+    (
+        "genai",
+        "Mosaic AI Vector Search (15%)",
+    ): [
+        {
+            "title": "Concept 1 — Vector Search endpoints and the two index types",
+            "section": "Mosaic AI Vector Search (15%)",
+            "body": """**Why it matters for the exam:** Semantic search needs two pieces: a **Vector Search endpoint** (the compute that runs embeddings + similarity search) and, on top of it, an **index**. Two index types, one exam-favorite distinction: a **Delta table sync index** — pointed at a source Delta table, it *automatically stays in sync* as the table changes (continuous or triggered sync), embeddings computed for you; best when your corpus is a table that updates. A **direct vector index** — you supply vectors and metadata yourself (e.g., from your own embedding model); best for full control. Symptom language: "index is stale" → sync mode/triggered, or manual index without sync.
+
+**Worked example (scenario)**
+```sql
+CREATE VECTOR INDEX catalog.schema.docs_idx
+ENDPOINT catalog.schema.vs_endpoint
+AS SELECT id, text FROM catalog.schema.docs;  -- Delta-synced index
+-- table changes → index refreshes automatically (continuous sync)
+```
+
+**How the exam asks it**
+> Search results must always reflect the latest rows in the documents table — which index setup?
+
+✅ **A Delta table sync index — automatic sync (continuous or triggered) keeps it current.** Traps: "a direct vector index reloaded nightly by a job" (manual, goes stale), "query the Delta table directly with LIKE" (not semantic), "recreate the index on a schedule" (wasteful).""",
+        },
+        {
+            "title": "Concept 2 — Hybrid search and filters: precision on top of meaning",
+            "section": "Mosaic AI Vector Search (15%)",
+            "body": """**Why it matters for the exam:** Pure vector search finds *meaning* but can miss exact terms (product codes, error strings). **Hybrid search** combines keyword (BM25) and vector similarity — you get both the exact match and the meaning match. And because search returns *candidates*, you can constrain them with **metadata filters** (only 2025 documents, only this product line) — filtering happens inside the index, so results are both relevant AND compliant. Know the knobs: `num_results` (how many chunks back), similarity threshold, filters, hybrid on/off.
+
+**Worked example (scenario)**
+```python
+results = vs_index.similarity_search(
+    query_text="error 429 rate limit billing",
+    columns=["id", "text"],
+    num_results=5,
+    filters={"year": {">": 2024}, "product": "serving"},  # pre-filter
+)
+```
+
+**How the exam asks it**
+> Users complain exact error codes are never found, though related docs are. Fix?
+
+✅ **Enable hybrid search — keyword matching catches exact codes while vectors carry the semantic matches.** Traps: "more results (num_results=100)" (noise, not precision), "retrain the embedding model" (wrong lever), "remove filters" (loosens governance).""",
+        },
+        {
+            "title": "Concept 3 — What the embedding pipeline does for you",
+            "section": "Mosaic AI Vector Search (15%)",
+            "body": """**Why it matters for the exam:** A Delta-sync index doesn't just copy rows — a managed **embedding pipeline** computes the embeddings for you (with a chosen embedding model) and keeps them updated on sync. The practical consequences the exam tests: you do NOT run your own embedding job for a synced index (the pipeline does it); you DO choose the embedding model (the same query and corpus must use the same model — mixed models produce meaningless distances); and sync modes are continuous (near-real-time, higher cost) vs triggered (refresh on demand). Symptom: "query embeddings were made with model A, corpus with model B, results are garbage" — that's why.
+
+**Worked example (scenario)**
+```text
+Corpus embedded with bge-large   → query embedded with bge-large  ✓
+Corpus bge-large, query MiniLM   → vectors live in different spaces, similarity meaningless ✗
+Switch embedding model           → re-embed the whole corpus (rebuild index)
+```
+
+**How the exam asks it**
+> A synced index returns nonsense results after an app switched its query-side embedding model. Why?
+
+✅ **Query and corpus embeddings must come from the same embedding model — mismatched models break similarity; re-embed consistently.** Traps: "increase num_results" (garbage × 5), "enable hybrid search" (band-aid), "lower the temperature" (unrelated).""",
+        },
+    ],
+    (
+        "genai",
+        "Mosaic AI Agent Framework (20%)",
+    ): [
+        {
+            "title": "Concept 1 — Agents and tools: planner hands out the work",
+            "section": "Mosaic AI Agent Framework (20%)",
+            "body": """**Why it matters for the exam:** A plain LLM can only answer from what's in the prompt. An **agent** is an LLM put in a loop: it reasons, calls **tools** (functions you gave it), reads results, and repeats until it can answer. The LLM acts as the *driver* — the planner deciding what to do next — and the tools are the hands: a UC function, a serving endpoint, a vector search, a parameterized SQL query, a Genie space. On Databricks the exam's core pattern: give the agent **governed** tools (Unity Catalog functions) so it can act on data with real permissions instead of guessing. Symptom language: "the agent invents a refund status" → it lacked a tool, so it hallucinated one.
+
+**Worked example (scenario)**
+```text
+User: "What's my order #4471 status?"
+Driver LLM: calls tool get_order_status(order_id=4471)   # UC function
+Tool returns: shipped 2026-11-20
+Driver LLM: answers from the tool's real output — grounded, no guess.
+```
+
+**How the exam asks it**
+> A chatbot must check live order data instead of guessing. What completes the agent?
+
+✅ **Attach a tool — e.g., a Unity Catalog function that queries the order table — so the driver LLM calls it and answers from real results.** Traps: "fine-tune on order data" (facts go stale, no live lookup), "paste the whole table in the prompt" (context window + freshness), "increase temperature" (worse).""",
+        },
+        {
+            "title": "Concept 2 — Agent Builder vs code-first: choosing your lane",
+            "section": "Mosaic AI Agent Framework (20%)",
+            "body": """**Why it matters for the exam:** Databricks offers two lanes for the same destination. **Agent Builder (no-code/low-code)** — assemble a RAG assistant or agent in the UI: pick a model, add knowledge (volumes, URLs, tables), attach tools, test in the built-in chat, deploy when ready. **Code-first (Mosaic AI Agent Framework, LangChain/LangGraph)** — write the agent in Python notebooks with full control over prompts, logic, and loops. The exam tests the boundary: quick grounded Q&A, no engineers → Agent Builder; custom multi-step logic, custom tool orchestration, custom evaluation pipelines → code-first. Both end the same way: **deploy as a Model Serving endpoint**.
+
+**Worked example (scenario)**
+```text
+HR-policy Q&A over PDFs, team of analysts      → Agent Builder, deploy UI
+Complex multi-tool insurance-claims agent,
+custom guardrails + eval harness in CI         → code-first agent framework
+```
+
+**How the exam asks it**
+> Which approach for a no-code team, and which for custom agent logic?
+
+✅ **Agent Builder for the no-code grounded assistant; code-first Agent Framework (LangChain/LangGraph in notebooks) for custom logic.** Traps: "LangChain for everyone" (unnecessary code for simple RAG), "the playground deploys agents" (it doesn't — it's for prompts), "AI Gateway builds agents" (different product — gateway governs traffic).""",
+        },
+        {
+            "title": "Concept 3 — Structured outputs and Genie spaces as tools",
+            "section": "Mosaic AI Agent Framework (20%)",
+            "body": """**Why it matters for the exam:** Two details that show up as scenario twists. **Structured outputs**: you can force the model to answer in a schema (valid JSON / typed fields) instead of prose — essential when a program consumes the output; validate against the schema, reject-and-retry on violations. **Genie spaces as tools**: an agent can call an entire *Genie space* (a curated natural-language interface over trusted data) as one tool — the space does governed, curated SQL on its certified tables, the agent gets clean answers. That's the "reuse the governed semantic layer instead of raw table access" pattern.
+
+**Worked example (scenario)**
+```text
+Agent step: extract_claim(fields) → expects
+{ "claim_id": "int", "amount": "float", "deny": "bool" }
+Model returns prose → schema validation fails → retry with the schema restated.
+Sales agent → tool: genie_space('revenue_qa') → governed answer from certified metrics.
+```
+
+**How the exam asks it**
+> A downstream system consumes the agent's reply as JSON; and the agent must answer sales numbers the way the finance Genie space defines them.
+
+✅ **Structured (schema-validated) outputs for the JSON consumer; attach the Genie space as a tool for governed metrics.** Traps: "ask politely for JSON" (unvalidated — breaks), "grant the agent raw table access" (ungoverned, reinventing Genie), "fine-tune for format" (overkill vs schema enforcement).""",
+        },
+        {
+            "title": "Concept 4 — The review app and debugging agent steps",
+            "section": "Mosaic AI Agent Framework (20%)",
+            "body": """**Why it matters for the exam:** When an agent answers badly, the fix starts with *seeing* what it did. The **review app** (and playground / MLflow traces) shows every step of a run: the exact prompts sent, the tools called with which arguments, what each tool returned, and the final answer. You debug agents like you debug code — step by step — not by guessing at the prompt. Common findings: the retrieval step returned bad chunks (fix chunking/index), the tool got wrong arguments (fix the tool description), the driver skipped a tool (prompt/design).
+
+**Worked example (scenario)**
+```text
+Bad answer → open the trace:
+ step 1 retrieval: returned 3 irrelevant chunks   ← fix: chunking / filters
+ step 2 driver: never called the pricing tool      ← fix: tool description
+ step 3 answer: invented pricing                   ← hallucination from 1+2
+```
+
+**How the exam asks it**
+> An agent gives wrong answers. Where do you look first?
+
+✅ **The run's trace / review app — inspect each step (retrieval, tool calls, prompts) to find the failing stage before changing anything.** Traps: "rewrite the system prompt blindly" (guessing), "swap the foundation model" (masks the real step), "add more documents" (may worsen retrieval noise).""",
+        },
+    ],
+    (
+        "genai",
+        "Mosaic AI Agent Evaluation (10%)",
+    ): [
+        {
+            "title": "Concept 1 — Evaluation sets: the exam your agent must pass",
+            "section": "Mosaic AI Agent Evaluation (10%)",
+            "body": """**Why it matters for the exam:** You can't improve an agent you don't measure. An **evaluation set** is a table of test cases — each with a request, the *expected response* (or *expected facts* that any good answer must contain), and optional **guidelines** the answer should follow ("cite the policy", "no medical advice"). Run the agent over the set, compare its answers to the expectations, get scores. This is how you prove a prompt/model change *helped* rather than guessing. Change one thing at a time, re-run the eval set, compare — that's the scientific loop the exam describes.
+
+**Worked example (scenario)**
+```text
+Evaluation set rows:
+ request: "What's the maternity leave policy?"
+ expected_facts: ["26 weeks", "applies after 1 year"]
+ guideline: "cite the policy section"
+→ agent's answer scored against facts + guideline; before/after model swap compared on the SAME set.
+```
+
+**How the exam asks it**
+> Two foundation models are candidates for the agent; choose objectively.
+
+✅ **Run both against the same evaluation set and compare scores — identical requests, expected facts, and guidelines.** Traps: "ask the team which feels better" (vibes), "chat with each for an hour" (anecdotal), "pick the cheaper one" (no quality signal).""",
+        },
+        {
+            "title": "Concept 2 — AI judges and deterministic metrics",
+            "section": "Mosaic AI Agent Evaluation (10%)",
+            "body": """**Why it matters for the exam:** Two kinds of metrics, and the exam expects you to know which is which. **Deterministic metrics** are computed exactly, no LLM opinion: did retrieval return the expected documents (retrieval precision/recall), did the answer contain the required fact, latency, cost. **LLM-as-judge** metrics use a model to grade qualities a string-match can't: *correctness* (is the answer right, compared to ground truth), *groundedness* (is every claim supported by the retrieved context). Judges are validated models with rubrics; they're good but graders, not oracles — pair them with deterministic checks. Symptom: "the answer is factually right but cites nothing from the context" → groundedness failed.
+
+**Worked example (scenario)**
+```text
+Deterministic: expected doc in top-5 retrieved? YES → retrieval precision 1.0
+LLM judge:    "Is the answer correct vs the expected response?" → 4/5
+LLM judge:    "Is every claim supported by the provided chunks?" → 1/5 (invented citation)
+```
+
+**How the exam asks it**
+> Verify both that answers are correct AND fully based on retrieved context — which metrics?
+
+✅ **Correctness (LLM judge vs expected response) plus groundedness (judge checks claims against retrieved context) — with deterministic retrieval metrics alongside.** Traps: "exact string match on the answer" (LLMs never match verbatim), "latency only" (not quality), "human review of every answer" (doesn't scale — judges exist for this).""",
+        },
+    ],
+    (
+        "genai",
+        "Fine-tuning and Custom Models (10%)",
+    ): [
+        {
+            "title": "Concept 1 — The fine-tuning approaches and when to use them",
+            "section": "Fine-tuning and Custom Models (10%)",
+            "body": """**Why it matters for the exam:** Fine-tuning takes a pretrained model and continues training on *your* data. Know the three flavors: **continued pretraining** — feed domain text (medical journals, legal contracts) so the model speaks your language; **supervised fine-tuning** — input/output pairs so the model learns your *task and format*; **preference optimization (DPO)** — chosen vs rejected pairs so the model learns your *taste* (tone, safety). The exam's golden rule: fine-tuning teaches **behavior and style** — facts still belong to RAG. "Model must always answer in our XML format" → fine-tune. "Model must know this year's policy" → RAG.
+
+**Worked example (scenario)**
+```text
+Domain vocabulary (clinical notes)      → continued pretraining
+"Always reply as strict JSON schema X"  → supervised fine-tuning
+"Prefer concise, cautious answers"      → preference optimization (DPO)
+"Know the 2026 refund policy"          → RAG (fine-tuning can't stay fresh)
+```
+
+**How the exam asks it**
+> The model must always emit the company's strict output format and use internal jargon. Which technique?
+
+✅ **Supervised fine-tuning on input/output examples (plus continued pretraining for the jargon) — format and style are learned behavior.** Traps: "RAG with format examples in the prompt" (helps, brittle — not guaranteed), "higher temperature" (opposite), "a bigger foundation model" (still won't be consistent).""",
+        },
+        {
+            "title": "Concept 2 — Fine-tuning workflow: data → run → register → serve",
+            "section": "Fine-tuning and Custom Models (10%)",
+            "body": """**Why it matters for the exam:** The lifecycle has four steps, each a potential exam detail. **Data prep** — training data lives in UC tables/volumes (the exam likes that data stays governed). **Training run** — launched from the UI or API, tracked in MLflow with its params and metrics; monitor the loss curve, not vibes. **Register** — the finished model goes into Unity Catalog (versioned, permissioned like any asset). **Serve** — deploy as a custom-model endpoint with autoscaling. And the guardrail: always evaluate the fine-tuned model against the base model on the same eval set — a fine-tune that scores worse is a failed experiment, not progress.
+
+**Worked example (scenario)**
+```text
+training_data in catalog.schema.volume → run finetune_claims_v2 (MLflow)
+loss plateaus → register model 'claims-model' v2 in UC
+→ deploy endpoint claims-model-v2 → evaluate vs base on eval set BEFORE rollout
+```
+
+**How the exam asks it**
+> After a fine-tune completes, what must happen before users get the new model?
+
+✅ **Register it in UC, deploy to an endpoint, and evaluate it against the current model on the same evaluation set.** Traps: "deploy immediately — newer is better" (unproven), "keep the weights on the engineer's laptop" (ungoverned), "compare on new test questions each time" (unfair comparison — same eval set).""",
+        },
+    ],
+    (
+        "genai",
+        "AI Governance and Deployment (10%)",
+    ): [
+        {
+            "title": "Concept 1 — Mosaic AI Gateway: traffic control for AI",
+            "section": "AI Governance and Deployment (10%)",
+            "body": """**Why it matters for the exam:** The **AI Gateway** sits between your apps and any model (Databricks-hosted, external, custom) and controls the traffic: **rate limits** (cap requests/tokens per user or per minute — protect budgets from runaway loops), **routing** (send requests to model destinations, split or fall back when one fails), **guardrails** (safety/PII filtering on inputs and outputs), and **usage tracking** (every call logged for cost and audit). The exam's story shape: an app burns tokens because a retry loop loops forever → rate limit fixes it; two teams fight over one external model's quota → route/limit per team.
+
+**Worked example (scenario)**
+```text
+Config: rate limit 20 requests/min per principal
+       + fallback to a smaller model on 429s
+       + PII guardrail on inputs
+       → one runaway app can't melt the budget; failures degrade, not die.
+```
+
+**How the exam asks it**
+> A buggy agent entered an infinite loop and spent the day calling the LLM. What prevents a repeat?
+
+✅ **AI Gateway rate limits — request/token caps per principal stop runaway consumption.** Traps: "fix the bug" (necessary but not a control), "rotate the API key" (doesn't limit), "ask the provider for a refund" (not engineering).""",
+        },
+        {
+            "title": "Concept 2 — Governing AI assets: everything is a UC object",
+            "section": "AI Governance and Deployment (10%)",
+            "body": """**Why it matters for the exam:** The governance move to remember: on Databricks, AI assets are **Unity Catalog objects** — models are registered in UC, agents can be UC functions, knowledge lives in UC tables and volumes, endpoints have owners and permissions. Consequences the exam tests: access follows UC grants (a team that can't SELECT the source table can't have an agent leak it — tools run with the *user's* permissions, not god-mode); secrets (API keys for external models) go in **secret scopes**, never in code or notebooks; and lineage/audit extend to AI assets like everything else.
+
+**Worked example (scenario)**
+```text
+Agent tool = UC function read_claims:
+  analyst has SELECT on claims     → tool returns rows
+  auditor lacks SELECT              → same tool returns an access error
+The agent inherits the caller's permissions — data governance = AI governance.
+```
+
+**How the exam asks it**
+> A user must get agent answers only over data they're allowed to see. What makes that true?
+
+✅ **Tools and agents run under the user's own Unity Catalog permissions — grants govern what the agent can touch.** Traps: "give the agent its own admin credentials" (god-mode — exactly wrong), "mask the answers in the UI" (unbypassable? no), "a prompt asking the agent to behave" (not enforcement).""",
+        },
+        {
+            "title": "Concept 3 — Deploying AI: agents as endpoints, external models, BYO keys",
+            "section": "AI Governance and Deployment (10%)",
+            "body": """**Why it matters for the exam:** Deployment patterns to keep straight. **Agents and assistants deploy to Model Serving endpoints** — the same mechanism as models: versioned, autoscaled, permissioned, called via REST by any app. **External models** (OpenAI, Anthropic, …) are served through Databricks-endpoint-fronting so the workspace keeps audit, rate limits, and guardrails — instead of every notebook calling out with its own key. **BYO keys/providers**: you can point Databricks at your own provider accounts; either way, keys live in **secret scopes** and are referenced by name, never embedded in code. Exam signal: "stop scattering API keys across notebooks" → external model endpoint + secret scope.
+
+**Worked example (scenario)**
+```text
+dbutils.secrets.get('openai', 'api_key') → configured once on a gateway/endpoint
+notebooks call endpoint 'llm-openai' — no keys anywhere in code,
+every call audited, rate-limited, and logged.
+```
+
+**How the exam asks it**
+> External-model API keys are currently pasted into many notebooks. What's the governed fix?
+
+✅ **Serve the external model behind a Databricks endpoint with the key in a secret scope — one governed, audited front door.** Traps: "a shared keys spreadsheet" (no), "hardcode keys as notebook variables" (the problem, restated), "each user registers their own model" (ungoverned sprawl).""",
+        },
+    ],
 }
 
 
@@ -2113,8 +2558,9 @@ app.index_string = (
 bank = get_bank()
 n_assoc = sum(1 for q in bank["questions"] if q["cert_level"] == "associate")
 n_prof = sum(1 for q in bank["questions"] if q["cert_level"] == "professional")
+n_genai = sum(1 for q in bank["questions"] if q["cert_level"] == "genai")
 BANK_INFO = (
-    f"Question bank: {n_assoc} Associate · {n_prof} Professional questions "
+    f"Question bank: {n_assoc} Associate · {n_prof} Professional · {n_genai} GenAI Engineer questions "
     f"({len(bank['flashcards'])} flashcards) — loaded from Unity Catalog"
     if not bank["error"]
     else f"⚠ Could not load the question bank from Unity Catalog: {bank['error']}"
@@ -2127,7 +2573,8 @@ app.layout = html.Div(
                 html.H1("Databricks Cert Prep"),
                 html.P(
                     "Train for the Databricks Data Engineer Associate & "
-                    "Professional certifications — learn, practice under real "
+                    "Professional certifications, plus Generative AI Engineer — "
+                    "learn, practice under real "
                     "exam conditions, and review every answer."
                 ),
             ],
@@ -2208,6 +2655,12 @@ app.layout = html.Div(
                                 html.A(
                                     "Data Engineer Professional page",
                                     href="https://www.databricks.com/learn/certification/data-engineer-professional",
+                                    target="_blank",
+                                ),
+                                " · ",
+                                html.A(
+                                    "Generative AI Engineer page",
+                                    href="https://www.databricks.com/learn/certification/generative-ai-engineer-associate",
                                     target="_blank",
                                 ),
                                 " · ",
@@ -2558,6 +3011,7 @@ app.layout = html.Div(
 - [AI Prep Guide (any Databricks certification)](https://www.databricks.com/sites/default/files/2026-06/ai-prep-guide-any-databricks-certification.pdf)
 - [Data Engineer Associate certification page](https://www.databricks.com/learn/certification/data-engineer-associate)
 - [Data Engineer Professional certification page](https://www.databricks.com/learn/certification/data-engineer-professional)
+- [Generative AI Engineer Associate certification page](https://www.databricks.com/learn/certification/generative-ai-engineer-associate)
 - [Databricks documentation](https://docs.databricks.com)
 """
                         ),
@@ -2802,6 +3256,7 @@ FEATURED_SETS = {
     "Expected Exam Bank — Complex Scenarios 3 (45)",
     "Official Practice Exam (Databricks Academy PDF)",
     "DataBricks-Practice-exam(1).pdf",
+    "Generative AI Engineer — Expected Exam Bank (60)",
 }
 
 
@@ -3216,7 +3671,8 @@ def render_question(state):
     )
     opts = [{"label": o, "value": i} for i, o in enumerate(q["options"])]
     value = state["answers"].get(str(q["id"]))
-    progress = f"{len(state['answers'])}/{len(qids)} answered · {LEVELS[0]['label'] if state['level'] == 'associate' else LEVELS[1]['label']}"
+    lvl_label = next((l['label'] for l in LEVELS if l['value'] == state['level']), '')
+    progress = f"{len(state['answers'])}/{len(qids)} answered · {lvl_label}"
     nav = [
         html.Button(
             str(i + 1),
