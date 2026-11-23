@@ -2480,6 +2480,11 @@ def exam_mutate(
     if not state or result is not None or state.get("submitted"):
         return no_update
 
+    # while paused only resume (exam-pause) is accepted — no answering,
+    # no navigating, no submitting, no auto-submit
+    if state.get("paused") and tid != "exam-pause":
+        return no_update
+
     if tid == "exam-options":
         if opt_value is None:
             return no_update
@@ -2568,11 +2573,38 @@ def tick_timer(_n, state):
     Output("exam-options", "value"),
     Output("exam-progress", "children"),
     Output("exam-nav", "children"),
+    Output("exam-options", "disabled"),
+    Output("exam-prev", "disabled"),
+    Output("exam-next", "disabled"),
+    Output("exam-submit", "disabled"),
     Input("exam-state", "data"),
 )
 def render_question(state):
     if not state:
         return no_update
+    paused = bool(state.get("paused"))
+    if paused:  # hide the question while the exam is paused
+        qnum = html.Div([html.Span("⏸ Exam paused", className="q-count")])
+        qtext = (
+            "The question and its answers are hidden while the exam is "
+            "paused. Click ▶ Resume to continue with your remaining time."
+        )
+        nav = [
+            html.Button(
+                str(i + 1),
+                id={"type": "exam-nav", "index": i},
+                className="nav-btn"
+                + (" answered" if str(qid) in state["answers"] else "")
+                + (" current" if i == state["idx"] else ""),
+                disabled=True,
+            )
+            for i, qid in enumerate(state["qids"])
+        ]
+        return (
+            qnum, qtext, [], None,
+            "Exam paused — timer stopped", nav,
+            True, True, True, True,
+        )
     by_id = {q["id"]: q for q in get_bank()["questions"]}
     qids, idx = state["qids"], state["idx"]
     q = by_id[qids[idx]]
@@ -2596,10 +2628,11 @@ def render_question(state):
             className="nav-btn"
             + (" answered" if str(qid) in state["answers"] else "")
             + (" current" if i == idx else ""),
+            disabled=paused,
         )
         for i, qid in enumerate(qids)
     ]
-    return qnum, q["question"], opts, value, progress, nav
+    return qnum, q["question"], opts, value, progress, nav, False, False, False, False
 
 
 @app.callback(
