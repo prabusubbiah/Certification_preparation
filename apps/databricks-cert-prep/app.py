@@ -201,6 +201,7 @@ button:hover { transform:translateY(-1px); box-shadow:0 3px 10px rgba(16,24,40,.
 .nav-btn.answered { background:#1a73ba; color:#fff; }
 .nav-btn.current { outline:3px solid #ffb5aa; box-shadow:0 0 0 4px rgba(255,181,170,.35); }
 .timer { font-size:26px; font-weight:700; font-variant-numeric:tabular-nums; letter-spacing:.5px; }
+.timer.paused { opacity:.6; }
 table.domains th { background:#eef2f8; font-weight:700; }
 .score { font-size:48px; font-weight:800; background:linear-gradient(120deg,#1a73ba,#15243b); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
 .review-item { border:1px solid #e3e8ef; border-radius:12px; padding:16px 18px; margin-bottom:14px; box-shadow:0 1px 4px rgba(16,24,40,.04); }
@@ -1890,9 +1891,9 @@ app.layout = html.Div(
                                         html.Button("‹ Prev", id="exam-prev"),
                                         html.Button("Next ›", id="exam-next"),
                                         html.Button(
-                                            "Pass",
-                                            id="exam-pass",
-                                            title="Skip this question and jump to the next unanswered one",
+                                            "⏸ Pause",
+                                            id="exam-pause",
+                                            title="Pause the exam and the timer (click again to resume)",
                                         ),
                                         html.Button(
                                             "Submit exam",
@@ -2421,7 +2422,7 @@ def toggle_exam_views(mode):
     Input("exam-options", "value"),
     Input("exam-prev", "n_clicks"),
     Input("exam-next", "n_clicks"),
-    Input("exam-pass", "n_clicks"),
+    Input("exam-pause", "n_clicks"),
     Input({"type": "exam-nav", "index": ALL}, "n_clicks"),
     Input("exam-retake", "n_clicks"),
     Input("exam-submit", "n_clicks"),
@@ -2436,7 +2437,7 @@ def toggle_exam_views(mode):
     State("exam-result", "data"),
 )
 def exam_mutate(
-    n_start, opt_value, _prev, _next, _pass, _nav, _retake, _submit, _tick,
+    n_start, opt_value, _prev, _next, _pause, _nav, _retake, _submit, _tick,
     level, num, mins, domain, difficulty, qset, state, result,
 ):
     tid = ctx.triggered_id
@@ -2497,15 +2498,15 @@ def exam_mutate(
         s["idx"] = min(len(state["qids"]) - 1, state["idx"] + 1)
         return s, no_update, no_update, no_update
 
-    if tid == "exam-pass":  # skip current question, jump to next unanswered
+    if tid == "exam-pause":  # pause / resume the exam and its timer
         s = dict(state)
-        qids, answers, n = state["qids"], state["answers"], len(state["qids"])
-        for off in range(1, n + 1):
-            j = (state["idx"] + off) % n
-            if str(qids[j]) not in answers:
-                s["idx"] = j
-                return s, no_update, no_update, no_update
-        s["idx"] = min(n - 1, state["idx"] + 1)
+        now = time.time()
+        if state.get("paused"):
+            s["deadline"] = now + state["remaining"]
+            s["paused"] = False
+        else:
+            s["paused"] = True
+            s["remaining"] = state["deadline"] - now
         return s, no_update, no_update, no_update
 
     if tid_dict.get("type") == "exam-nav":
@@ -2521,6 +2522,8 @@ def exam_mutate(
         return s, res, "results", True
 
     if tid == "exam-tick":  # auto-submit when time runs out
+        if state.get("paused"):
+            return no_update
         if state["deadline"] - time.time() <= 0:
             res = compute_results(state)
             save_attempt(state, res)
@@ -2533,6 +2536,16 @@ def exam_mutate(
 
 
 @app.callback(
+    Output("exam-pause", "children"),
+    Input("exam-state", "data"),
+)
+def pause_label(state):
+    if state and not state.get("submitted"):
+        return "▶ Resume" if state.get("paused") else "⏸ Pause"
+    return "⏸ Pause"
+
+
+@app.callback(
     Output("exam-timer", "children"),
     Output("exam-timer", "className"),
     Input("exam-tick", "n_intervals"),
@@ -2541,6 +2554,8 @@ def exam_mutate(
 def tick_timer(_n, state):
     if not state:
         return "--:--", "timer"
+    if state.get("paused"):
+        return f"⏸ {fmt_secs(state['remaining'])}", "timer paused"
     remaining = state["deadline"] - time.time()
     cls = "timer" + (" low" if remaining < 60 else "")
     return fmt_secs(remaining), cls
