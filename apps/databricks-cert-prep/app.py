@@ -1414,6 +1414,595 @@ GRANT SELECT ON SHARE partner_analytics TO RECIPIENT partner_acme;
 ✅ **Column-level lineage — Unity Catalog already knows every object that depends on that column.** Same family: the job's owner is leaving → ✅ **recreate the job under a service principal and hand it the ownership and grants**. Traps: "ask the departing engineer for a long-lived token", "store their PAT in a secret scope", "rebuild every table nightly".""",
         },
     ],
+    (
+        "professional",
+        "Developing Code for Data Processing using Python and SQL (22%)",
+    ): [
+        {
+            "title": "Concept 1 — Watermarks: stop waiting so memory doesn't grow forever",
+            "section": "Developing Code for Data Processing using Python and SQL (22%)",
+            "body": """**Why it matters for the exam:** A streaming aggregation never gets a "final" answer — Spark keeps every group's running total in memory in case a late event arrives for it. Without a stop rule, that memory grows forever. The **watermark** is the stop rule: "once an event's timestamp is more than 2 hours behind the newest data, that window is closed — stop waiting for it." Closed windows are dropped from memory (that's *state eviction*), and events arriving later than the watermark are dropped too. Three parts to remember: the timestamp column, the delay, and the freed memory.
+
+**Worked example (scenario)**
+```python
+(spark.readStream.table("events")
+    .withWatermark("event_time", "2 hours")
+    .groupBy(window("event_time", "10 minutes"), "region")
+    .agg(F.sum("amount").alias("total"))
+)
+# once event_time + 2h has passed, that 10-minute window is closed for good
+```
+
+**How the exam asks it**
+> An hourly aggregation over an event stream has unbounded state growth; events arrive up to 2 hours late.
+
+✅ **Set a 2-hour watermark on event time — old windows close, their memory is freed, and later-arriving rows are dropped.** Traps: "checkpoint every 2 hours" (checkpoint ≠ state), "add more workers" (state still grows), "use complete output mode" (keeps every window — the worst choice).""",
+        },
+        {
+            "title": "Concept 2 — Trigger.AvailableNow: process what's there, then clock out",
+            "section": "Developing Code for Data Processing using Python and SQL (22%)",
+            "body": """**Why it matters for the exam:** A trigger decides *when* a stream processes data. The default runs forever in small micro-batches. `trigger(availableNow=True)` processes everything currently available and then **stops** — "work through the backlog, then clock out." That is exactly how scheduled backfills work: run nightly, consume only the new data, exit, release compute, resume from the checkpoint next run. It's also what a *Triggered* pipeline does. Contrast with `Trigger.Once` (one single giant batch, no size control) and `processingTime` (never stops on its own).
+
+**Worked example (scenario)**
+```python
+(spark.readStream.format("cloudFiles")
+    .option("cloudFiles.format", "json")
+    .load(landing_path)
+    .writeStream
+    .option("checkpointLocation", chk)     # remembers progress across runs
+    .trigger(availableNow=True)             # drain available data, then stop
+    .toTable("bronze_events")
+)
+```
+
+**How the exam asks it**
+> A nightly job must process only newly arrived files and exit when done, picking up where the last run stopped.
+
+✅ **trigger(availableNow=True) with a durable checkpoint — drains available data in bounded micro-batches, then exits; the next run resumes from the checkpoint.** Traps: "trigger(once=True)" (one huge unbounded batch), "processingTime="1 day"" (keeps running), "batch INSERT OVERWRITE" (re-reads everything).""",
+        },
+        {
+            "title": "Concept 3 — foreachBatch + idempotent MERGE: streaming into anything",
+            "section": "Developing Code for Data Processing using Python and SQL (22%)",
+            "body": """**Why it matters for the exam:** Structured Streaming has first-class sinks for Delta tables — but what if the target is a JDBC database, Redis, or a legacy system? `foreachBatch` hands each micro-batch to **your** function as an ordinary DataFrame, and you write it however the target needs. The catch: on failure a batch is retried, so the same rows can hit your function twice. The fix is making the write **idempotent** — running it twice leaves the same result as once. The classic idempotent pattern is a MERGE on keys (or overwrite exactly the batch's range).
+
+**Worked example (scenario)**
+```python
+def upsert(batch_df, batch_id):
+    batch_df.createOrReplaceTempView("batch")
+    spark.sql('''
+        MERGE INTO jdbc_metrics t USING batch s
+        ON t.id = s.id
+        WHEN MATCHED THEN UPDATE SET *
+        WHEN NOT MATCHED THEN INSERT *
+    ''')
+
+(stream.writeStream
+    .foreachBatch(upsert)                     # your logic, every micro-batch
+    .option("checkpointLocation", chk)
+    .start())
+```
+
+**How the exam asks it**
+> A stream must upsert into a non-Delta external database reliably, even when a micro-batch is retried.
+
+✅ **foreachBatch with an idempotent MERGE (or range-overwrite) plus a checkpoint — retries can't create duplicates.** Traps: "plain append writes" (retries duplicate rows), "writeStream.format('jdbc')" (JDBC isn't a streaming sink), "turn retries off" (loses the fault tolerance you want).""",
+        },
+        {
+            "title": "Concept 4 — Checkpoints: the bookmark that makes a stream resumable",
+            "section": "Developing Code for Data Processing using Python and SQL (22%)",
+            "body": """**Why it matters for the exam:** A stream's **checkpoint** is its memory: which files and rows were already processed, plus any aggregation state. Restart with the same checkpoint → the stream picks up exactly where it stopped, no duplicates. Delete it or point to a new location → the stream thinks it's brand new and re-reads everything, usually duplicating data. Rules the exam tests: same checkpoint for the same query; changed query logic (different joins/aggregations) needs a fresh checkpoint location; never delete a checkpoint to "fix" a schema error — that reprocesses everything.
+
+**Worked example (scenario)**
+```python
+stream = (spark.readStream.table("bronze")
+    .writeStream
+    .option("checkpointLocation", "/chk/events_v1")
+    .toTable("silver"))
+# restart the job with the SAME location -> resumes where it left off
+# change the aggregation logic -> new location (e.g. events_v2)
+```
+
+**How the exam asks it**
+> After a restart, the streaming job re-processed the whole source directory and the target now has duplicates. Why?
+
+✅ **The checkpoint was deleted or moved — the stream lost its place and re-read everything.** Traps: "Spark doesn't support exactly-once" (checkpoint + idempotent sink gives it), "the driver restarted" (restarts are exactly what checkpoints handle), "VACUUM deleted progress" (VACUUM only cleans old table files).""",
+        },
+        {
+            "title": "Concept 5 — One engine for batch and streaming: what changes and what doesn't",
+            "section": "Developing Code for Data Processing using Python and SQL (22%)",
+            "body": """**Why it matters for the exam:** Structured Streaming is not a separate product — the same DataFrame engine, same optimizations, just in "keep going" mode. Reads start with `spark.readStream.table(...)`, and instead of an action you call `.writeStream...start()`. Actions like `collect()` or `show()` are **impossible** on a streaming DataFrame — it never ends, so nothing can return "all rows". Output modes matter: `append` (emit rows once they're final), `update` (emit what changed each batch), `complete` (re-emit the entire aggregation every batch — state-heavy). Dedup is built in: `dropDuplicates` works on streams *when* a watermark bounds the memory it needs.
+
+**Worked example (scenario)**
+```python
+df = spark.readStream.table("events").withWatermark("ts", "1 hour")
+clean = df.dropDuplicates(["event_id"])   # memory-safe because the watermark bounds it
+```
+
+**How the exam asks it**
+> Which is NOT valid on a streaming DataFrame — or, when must a watermark exist for dropDuplicates?
+
+✅ **collect()/show() never work on an endless stream; dropDuplicates on a stream needs a watermark so Spark knows when it can forget an event_id.** Traps: "cache the streaming DataFrame" (an endless stream can't be fully cached), "complete mode saves state" (it's the most stateful), "streaming joins need a different API" (same API; stream-stream joins just need watermarks).""",
+        },
+        {
+            "title": "Concept 6 — Built-ins over UDFs; when/otherwise and higher-order functions",
+            "section": "Developing Code for Data Processing using Python and SQL (22%)",
+            "body": """**Why it matters for the exam:** A Python UDF forces Spark to ship every row out of the optimized JVM into a Python process and back — the optimizer can't see inside it, so it can't optimize around it. Built-in expressions run inside the engine. So the habit the exam rewards: always look for the built-in first. Know the branching tool — `when(...).when(...).otherwise(...)` is Spark's CASE WHEN; and for arrays, the higher-order functions `transform`, `filter`, `exists` beat explode-and-regroup because the whole array is processed in one expression.
+
+**Worked example (scenario)**
+```python
+df2 = df.select(
+    F.when(F.col("amount") > 100, "high").otherwise("normal").alias("band"),
+    F.expr("transform(tags, t -> upper(t))").alias("tags_up"),
+)
+# prefer this over a UDF like: def band(x): return 'high' if x>100 else 'normal'
+```
+
+**How the exam asks it**
+> A Python UDF is making a large transformation slow. What's the fix?
+
+✅ **Replace the UDF with built-in expressions (when/otherwise, higher-order functions, F.expr) so Catalyst can optimize the plan.** Traps: "add more executors" (the serialization bottleneck stays), "use a pandas UDF" (faster, but still second to built-ins), "disable AQE" (unrelated).""",
+        },
+    ],
+    (
+        "professional",
+        "Data Ingestion & Acquisition (7%)",
+    ): [
+        {
+            "title": "Concept 1 — Change data feed: row-level history you can stream",
+            "section": "Data Ingestion & Acquisition (7%)",
+            "body": """**Why it matters for the exam:** Sometimes you don't need the table — you need what *changed* in it. Diffing two snapshots is expensive and ambiguous. The **change data feed** (CDF) makes Delta record every row-level change — inserts, updates, deletes — and lets you read them back: as a batch between two versions, or as a stream that processes changes as they happen. Every returned row carries `_change_type` (insert / update_postimage / delete) and `_commit_version`, so consumers can react precisely and idempotently.
+
+**Worked example (scenario)**
+```sql
+ALTER TABLE orders SET TBLPROPERTIES (delta.enableChangeDataFeed = true);
+
+SELECT * FROM table_changes('orders', 5, 12);  -- changes between versions 5..12
+-- streaming: read option readChangeFeed=true, process each change as it lands
+```
+
+**How the exam asks it**
+> A downstream job must process every insert/update/delete on a table exactly once, incrementally, without reading the whole table.
+
+✅ **Enable the change data feed and consume it (batch range or stream) — each row-level change arrives with its type and version.** Traps: "diff two snapshots" (expensive, timing-dependent), "read DESCRIBE HISTORY" (commit metadata, not row data), "nightly full copy".""",
+        },
+        {
+            "title": "Concept 2 — Streaming tables vs materialized views: append vs recompute",
+            "section": "Data Ingestion & Acquisition (7%)",
+            "body": """**Why it matters for the exam:** Both live in Lakeflow pipelines, but they grow differently. A **streaming table** ingests incrementally: each refresh processes only NEW data and appends it (with an optional full refresh to rebuild from source). A **materialized view** recalculates the whole result from scratch on every refresh — right for aggregations and joins over batch sources where "the latest answer" matters. One-liner for the exam: streaming table = "process each new record once"; materialized view = "re-derive the whole answer every refresh."
+
+**Worked example (scenario)**
+```sql
+CREATE OR REFRESH STREAMING TABLE st_events AS
+SELECT * FROM STREAM read_files('/landing/events');
+
+CREATE OR REFRESH MATERIALIZED VIEW mv_daily AS
+SELECT event_date, count(*) AS n FROM st_events GROUP BY event_date;
+```
+
+**How the exam asks it**
+> Which pipeline object backs a continuous append-only ingest, and which backs a fully-recomputed nightly aggregate?
+
+✅ **Streaming table for the append-only feed; materialized view for the full-refresh aggregation.** Traps: "materialized views update incrementally" (they fully recompute), "streaming tables support MERGE-style updates" (append-only by design), "a regular CREATE TABLE AS SELECT refreshes itself" (plain tables never refresh).""",
+        },
+        {
+            "title": "Concept 3 — Append flows and Auto Loader inside pipelines",
+            "section": "Data Ingestion & Acquisition (7%)",
+            "body": """**Why it matters for the exam:** One streaming table can write from more than its main definition. **Append flows** are additional write paths into the same streaming table — a second source, or a one-time historical backfill that runs as a batch and appends without rebuilding the table. And **Auto Loader** (`cloudFiles`) remains the file-ingestion pattern inside pipelines: it discovers new files incrementally, handles schema drift, and scales to millions of files — that's why it beats a directory re-read for cloud storage.
+
+**Worked example (scenario)**
+```python
+@dlt.table(name="st_events")
+def events():
+    return (spark.readStream.format("cloudFiles")
+            .option("cloudFiles.format", "json").load(landing_path))
+
+@dlt.append_flow(target="st_events", name="backfill_2020")
+def backfill():
+    return spark.read.json("/archive/2020/")   # one-time historical append
+```
+
+**How the exam asks it**
+> Add a one-time historical load into an existing streaming table without rebuilding it from source.
+
+✅ **An append flow writing the historical batch into the existing streaming table.** Traps: "full refresh after reloading the source" (slow, needs the source retained), "INSERT INTO the streaming table manually" (managed by its pipeline), "delete the checkpoint and restart" (reprocesses everything).""",
+        },
+    ],
+    (
+        "professional",
+        "Data Transformation, Cleansing, and Quality (10%)",
+    ): [
+        {
+            "title": "Concept 1 — Expectations: keep, drop, or fail — and always report",
+            "section": "Data Transformation, Cleansing, and Quality (10%)",
+            "body": """**Why it matters for the exam:** Expectations are data-quality rules you attach to a dataset in a Lakeflow pipeline. Each rule is a boolean (true/false per row), and the pipeline tracks what percentage of rows passed — that's the metric the exam keeps mentioning. Three flavors, three severities: `expect` — bad rows **stay**, but the metric reports them; `expect_or_drop` — bad rows are **removed**; `expect_or_fail` — the first bad row **stops the whole pipeline**. Quarantine trick: `expect` (keep everything) + a view that filters the bad rows into a separate quarantine table.
+
+**Worked example (scenario)**
+```python
+@dlt.expect_or_drop("valid_amount", "amount > 0")
+@dlt.expect("known_country", "country IN ('US', 'DE', 'IN')")
+def orders_clean():
+    return spark.readStream.table("orders_raw")
+# UI/metrics: % passing per rule; bad rows dropped, unknown countries kept+flagged
+```
+
+**How the exam asks it**
+> Invalid rows must be removed, and the passing percentage must be visible in pipeline metrics.
+
+✅ **expect_or_drop — failing rows are removed and the rule's pass-rate is tracked in metrics.** Traps: "expect" (keeps bad rows), "expect_or_fail" (halts the pipeline), "a CHECK constraint" (write-time table rule, no metrics).""",
+        },
+        {
+            "title": "Concept 2 — Constraints: NOT NULL and CHECK, enforced at write time",
+            "section": "Data Transformation, Cleansing, and Quality (10%)",
+            "body": """**Why it matters for the exam:** Constraints are guarantees built into the **table**, enforced on **every write** — a MERGE, an INSERT, anything. `NOT NULL` rejects rows with a null in that column; `CHECK (condition)` validates each row against a condition. A violating write **fails loudly, entirely**. Contrast with expectations: constraints protect the table for everyone forever; expectations are pipeline rules that produce metrics. When a question says "must never be possible to write" — that's a constraint.
+
+**Worked example (scenario)**
+```sql
+CREATE TABLE sales (
+  id BIGINT NOT NULL,
+  amount DECIMAL(10,2) CHECK (amount >= 0)
+) USING DELTA;
+-- any INSERT/MERGE with a null id or negative amount fails the statement
+```
+
+**How the exam asks it**
+> Null ids must never land in the table, even from a MERGE written months from now.
+
+✅ **A NOT NULL constraint (plus CHECK where useful) — enforced at write time for every writer.** Traps: "expect_or_fail" (only runs during pipeline refreshes), "filter nulls in the job" (only as good as every future writer), "a column mask" (hides values, doesn't validate).""",
+        },
+        {
+            "title": "Concept 3 — Generated columns: values the table computes for you",
+            "section": "Data Transformation, Cleansing, and Quality (10%)",
+            "body": """**Why it matters for the exam:** A generated column is computed by the table from other columns at write time (`GENERATED ALWAYS AS (...)`) — nobody supplies it, so nobody can write a wrong value. The exam's favorite use: you can't cluster a table by an expression, but you *can* cluster by a generated column. So: extract the date from a timestamp into a generated column, then `CLUSTER BY` that date — clean layout without a redundant column that writers must maintain.
+
+**Worked example (scenario)**
+```sql
+CREATE TABLE events (
+  ts TIMESTAMP,
+  event_date DATE GENERATED ALWAYS AS (CAST(ts AS DATE))
+) USING DELTA CLUSTER BY (event_date);
+
+INSERT INTO events (ts) VALUES (current_timestamp());  -- event_date is filled in
+```
+
+**How the exam asks it**
+> A table must be clustered on the date portion of a timestamp column.
+
+✅ **Generate a date column with GENERATED ALWAYS AS, then CLUSTER BY it.** Traps: "CLUSTER BY ts" (too fine-grained — poor file skipping), "partition by the timestamp" (one folder per timestamp value — disaster), "a view with a derived column" (organizes nothing on storage).""",
+        },
+    ],
+    (
+        "professional",
+        "Data Sharing and Federation (5%)",
+    ): [
+        {
+            "title": "Concept 1 — Delta Sharing: shares, recipients, providers",
+            "section": "Data Sharing and Federation (5%)",
+            "body": """**Why it matters for the exam:** Delta Sharing publishes your governed tables to outsiders without copying data anywhere. Three roles: a **share** is your bundle of tables/views; a **recipient** is who may read it (they get a token — no workspace account needed); a **provider** is an external party sharing data *to* you. Recipients query with anything that speaks the open protocol — Power BI, Excel, pandas, Tableau — or, Databricks-to-Databricks, as a live catalog in their workspace. Revoke the recipient and access ends instantly, centrally.
+
+**Worked example (scenario)**
+```sql
+CREATE SHARE partner;
+ALTER SHARE partner ADD TABLE gold.orders;
+CREATE RECIPIENT acme;                         -- no workspace user required
+GRANT SELECT ON SHARE partner TO RECIPIENT acme;
+-- REVOKE ... and acme is cut off immediately
+```
+
+**How the exam asks it**
+> An external partner (no workspace account) needs live queries on 5 tables, revocable at once.
+
+✅ **A share + recipient over Delta Sharing — open-protocol live reads, instant central revocation.** Traps: "nightly CSV exports" (stale copies, no revoke), "workspace accounts for partner users" (license + over-access), "a foreign catalog" (that's consuming others' databases, not publishing).""",
+        },
+        {
+            "title": "Concept 2 — Foreign catalogs: query external databases live",
+            "section": "Data Sharing and Federation (5%)",
+            "body": """**Why it matters for the exam:** Lakehouse Federation lets you query data sitting in Postgres, MySQL, Redshift, Snowflake, and friends **without copying it**. You create a **connection** (stored credentials + endpoint), then a **foreign catalog** on top of it. The remote tables appear like normal Unity Catalog tables, access is governed by UC permissions, and Spark pushes filters and joins down to the source where it can. Direction matters for the exam: a foreign catalog is YOU consuming someone else's database; Delta Sharing is YOU publishing to others.
+
+**Worked example (scenario)**
+```sql
+CREATE CONNECTION pg TYPE POSTGRESQL
+OPTIONS (host 'pg.internal', port '5432', user 'ro', password '...');
+
+CREATE FOREIGN CATALOG pg_sales USING CONNECTION pg
+OPTIONS (database 'sales');
+
+SELECT * FROM pg_sales.public.orders LIMIT 5;   -- live, no copy
+```
+
+**How the exam asks it**
+> Analysts must join live Postgres tables with Delta tables, governed in Unity Catalog, with no data copies.
+
+✅ **A connection + foreign catalog — live federated queries with pushdown, governed by UC.** Traps: "nightly ingestion job" (that's copying, not federation), "a Delta Sharing share of Postgres" (Delta Sharing serves Delta tables), "a JDBC reader configured in every notebook" (ungoverned, repeated setup).""",
+        },
+    ],
+    (
+        "professional",
+        "Monitoring and Alerting (10%)",
+    ): [
+        {
+            "title": "Concept 1 — System tables: the observability backbone",
+            "section": "Monitoring and Alerting (10%)",
+            "body": """**Why it matters for the exam:** Your workspace writes its own history into queryable Delta tables. `system.query.history` — every query with durations, user, and result size; `system.access.audit` — every API/UI action, who did it and when; `system.access.lineage` (plus table/column lineage) — what feeds what; `system.billing.usage` — cost per SKU per day. The exam's pattern: "monitor / report / alert on X" — if X is performance, audit evidence, lineage, or cost, the answer starts with the matching system table (often + a SQL alert on top).
+
+**Worked example (scenario)**
+```sql
+-- heaviest users this week
+SELECT user_name, SUM(execution_time_ms)/1000 AS secs
+FROM system.query.history
+WHERE start_time > now() - INTERVAL 7 DAYS
+GROUP BY user_name ORDER BY secs DESC;
+```
+
+**How the exam asks it**
+> Security needs 90 days of who-did-what evidence; finance needs cost per team.
+
+✅ **system.access.audit for the evidence trail; system.billing.usage for cost — both queryable, retained, Delta.** Traps: "job run history" (jobs only), "cluster event logs" (infrastructure events, not user actions), "export screenshots".""",
+        },
+        {
+            "title": "Concept 2 — SQL alerts and job notifications: who tells you when",
+            "section": "Monitoring and Alerting (10%)",
+            "body": """**Why it matters for the exam:** Two notification systems, two triggers. A **SQL alert** re-runs a saved query on a schedule and fires when the result crosses a threshold — freshness SLAs, failed-login counts, low stock, cost spikes. A **job notification** attaches to a Lakeflow job and fires on *events* — failure, timeout, start. Both deliver to the same destinations: email, webhook, Microsoft Teams, Slack. Signal words: "result crosses a threshold" → alert; "when the nightly job fails" → job notification.
+
+**Worked example (scenario)**
+```sql
+-- the alert's query, evaluated every 30 minutes
+SELECT 1 WHERE (SELECT max(updated_at) FROM gold.orders)
+          < now() - INTERVAL 2 HOURS;
+-- configure: trigger "when rows returned > 0" → destination: Slack webhook
+```
+
+**How the exam asks it**
+> Page the team when data freshness exceeds 2 hours; also notify on any nightly-job failure.
+
+✅ **A SQL alert on the freshness query (threshold) plus a failure notification on the job — both to a webhook/Slack destination.** Traps: "a notebook that loops and emails" (hand-built, fragile), "watch the dashboard" (not automated), "auto-termination" (compute feature, unrelated).""",
+        },
+        {
+            "title": "Concept 3 — Predictive optimization: maintenance that runs itself",
+            "section": "Monitoring and Alerting (10%)",
+            "body": """**Why it matters for the exam:** Tables degrade: files fragment, old versions pile up. **Predictive optimization** lets Unity Catalog run OPTIMIZE (compaction and clustering maintenance) and VACUUM **automatically** on your **managed** tables, in the background, when it predicts real benefit. You enable it once per catalog (or schema) — then there's no maintenance job to write, schedule, or forget. Scope matters: managed tables only — external tables aren't maintained by it.
+
+**Worked example (scenario)**
+```sql
+ALTER CATALOG main ENABLE PREDICTIVE OPTIMIZATION;
+-- UC now compacts/clusters/VACUUMs managed tables as needed, on its own clock
+```
+
+**How the exam asks it**
+> Replace the team's manual OPTIMIZE/VACUUM jobs with self-maintaining tables.
+
+✅ **Enable predictive optimization — Unity Catalog runs OPTIMIZE and VACUUM automatically on managed tables.** Traps: "schedule OPTIMIZE in a job" (that's the manual approach you're replacing), "it also works on external tables" (managed only), "liquid clustering replaces it" (different feature — layout, not maintenance).""",
+        },
+    ],
+    (
+        "professional",
+        "Cost & Performance Optimisation (13%)",
+    ): [
+        {
+            "title": "Concept 1 — AQE: re-planning the query at runtime",
+            "section": "Cost & Performance Optimisation (13%)",
+            "body": """**Why it matters for the exam:** The optimizer plans a query *before* it knows real data sizes. **Adaptive Query Execution (AQE)** fixes that: at each shuffle boundary it measures the actual data and re-plans the rest. Three things AQE does — memorize them: (1) converts a sort-merge join to a **broadcast** join when one side turns out small; (2) **coalesces shuffle partitions** when data is smaller than planned (fewer, bigger tasks instead of hundreds of tiny ones); (3) **splits skewed join partitions** automatically. It's ON by default on modern runtimes and warehouses — so "enable AQE" is usually a wrong answer; "AQE handles it" is often the right one.
+
+**Worked example (scenario)**
+```python
+spark.conf.set("spark.sql.adaptive.enabled", "true")          # default true
+spark.conf.set("spark.sql.adaptive.skewJoin.enabled", "true")  # default true
+```
+
+**How the exam asks it**
+> A join ran with hundreds of nearly-empty tasks and stale statistics; what made execution efficient?
+
+✅ **AQE — it measured real sizes at runtime, coalesced shuffle partitions, and converted the join to a broadcast using runtime stats.** Traps: "manually raise shuffle partitions" (more tiny tasks), "recompute statistics" (good practice, but the runtime fix is AQE), "set a broadcast hint" (a tool, but AQE does it automatically).""",
+        },
+        {
+            "title": "Concept 2 — Broadcast joins and skew: the two classic fixes",
+            "section": "Cost & Performance Optimisation (13%)",
+            "body": """**Why it matters for the exam:** Two opposite join problems, two fixes. Joining a big fact table to a small dimension table? Don't shuffle both — **broadcast** the small one to every executor so each joins locally, zero shuffle. Spark broadcasts automatically below a size threshold, and you can force it with a hint. The opposite problem is **skew** — one key owns most of the rows, so one task runs while the rest finish. Fixes: let AQE split skewed partitions, or **salt** the hot key (add a random 0–N column to both sides, join on key+salt, then re-aggregate).
+
+**Worked example (scenario)**
+```python
+orders.join(F.broadcast(dims), "dim_id")   # small dims: no shuffle for orders
+# skew: add salt = (F.rand() * 8).cast("int") to both sides, join (key, salt), then group by key
+```
+
+**How the exam asks it**
+> 199 tasks finish in 2 minutes; one task runs 40 minutes on a single customer_id.
+
+✅ **That's skew — fix it with AQE skew handling or by salting the hot key.** Traps: "use a bigger cluster" (the same single hot task remains), "broadcast the big table" (broadcast the SMALL side), "repartition to 1 file" (one task does everything — worse).""",
+        },
+        {
+            "title": "Concept 3 — Deletion vectors + liquid clustering: cheap updates, fast filters",
+            "section": "Cost & Performance Optimisation (13%)",
+            "body": """**Why it matters for the exam:** Two storage features that pair beautifully. **Deletion vectors**: UPDATE/DELETE/MERGE mark changed rows in a small side file instead of rewriting whole files right now — DML gets dramatically faster (files are rewritten lazily during OPTIMIZE). Enabled by default for Unity Catalog managed tables. **Liquid clustering** (`CLUSTER BY`): incremental, self-tuning data layout for file skipping. Unlike partitioning or ZORDER you never rewrite the whole table to change keys, and it handles high-cardinality columns like customer_id. A modern table is simply `CLUSTER BY (filter columns)`.
+
+**Worked example (scenario)**
+```sql
+CREATE TABLE orders (
+  customer_id STRING,
+  ts TIMESTAMP
+) USING DELTA CLUSTER BY (customer_id, days(ts));
+-- MERGE is cheap (deletion vectors), filters skip files (clustering)
+```
+
+**How the exam asks it**
+> Heavy MERGE/UPDATE workload plus filters by customer and date — best table layout?
+
+✅ **Liquid clustering on the filter columns with deletion vectors (default) — fast DML and file skipping without over-partitioning.** Traps: "Hive-partition by customer_id" (one folder per customer — millions of tiny folders), "ZORDER with a full rewrite" (legacy, expensive), "turn deletion vectors off" (slows DML back down).""",
+        },
+        {
+            "title": "Concept 4 — Caching, OPTIMIZE, VACUUM: which knob does what",
+            "section": "Cost & Performance Optimisation (13%)",
+            "body": """**Why it matters for the exam:** Three maintenance tools the exam loves to mix up. **cache/persist** keeps a result in memory/disk for *reuse* — only worth it for results used more than once; caching everything is a memory sink (and meaningless on streams). **OPTIMIZE** compacts small files into big ones and applies clustering — the fix for "400,000 tiny files make everything slow." **VACUUM** deletes files no longer needed by any retained version — that's *storage cleanup* with a retention window (default 7 days), not a performance fix, and it removes time travel beyond the window.
+
+**Worked example (scenario)**
+```sql
+OPTIMIZE events;                       -- compaction + clustering
+VACUUM events RETAIN 168 HOURS;        -- remove expired files (7 days)
+```
+
+**How the exam asks it**
+> A table has hundreds of thousands of tiny files; queries are slow and storage costs creep up.
+
+✅ **Run OPTIMIZE to compact the files (VACUUM separately cleans expired old versions).** Traps: "VACUUM first" (it never fixes file counts), "cache the table" (memory trick, not a layout fix), "REPARTITION once" (one-off — new writes fragment again).""",
+        },
+    ],
+    (
+        "professional",
+        "Ensuring Data Security and Compliance (10%)",
+    ): [
+        {
+            "title": "Concept 1 — Row filters and column masks with caller context",
+            "section": "Ensuring Data Security and Compliance (10%)",
+            "body": """**Why it matters for the exam:** Instead of trusting every query to filter itself, attach the rule to the **table**. A **row filter** is a boolean function bound to a table — each user's queries only see rows where it returns true. A **column mask** is a function bound to a column — it decides what each viewer sees there. Both use *caller context*: `is_account_group_member('hr_payroll')` is true only for the person running the query. Everyone queries the same table; what they get back differs. Bypass-proof because it's enforced in the catalog, not in anyone's SQL.
+
+**Worked example (scenario)**
+```sql
+CREATE FUNCTION mask_salary(s INT)
+RETURN CASE WHEN is_account_group_member('hr_payroll') THEN s ELSE 0 END;
+
+ALTER TABLE employees ALTER COLUMN salary SET MASK mask_salary;
+-- every query by non-hr_payroll users sees 0 instead of the real salary
+```
+
+**How the exam asks it**
+> Salaries visible only to hr_payroll; regional rows only to each regional team.
+
+✅ **A column mask with is_account_group_member for salaries; a row filter function for regions — enforced on the table for every query.** Traps: "one filtered view per team" (N views, easily bypassed), "grant SELECT on a subset of rows" (not possible), "WHERE clauses in the dashboard" (not enforced).""",
+        },
+        {
+            "title": "Concept 2 — Service principals and OAuth: machines get their own identities",
+            "section": "Ensuring Data Security and Compliance (10%)",
+            "body": """**Why it matters for the exam:** A scheduled job, a pipeline, or a CI/CD flow must log in with no human present. Give the machine its own identity — a **service principal** — and let it authenticate with **OAuth machine-to-machine credentials** (client id + secret), granted exactly the rights it needs and nothing more. The trap answers revolve around personal access tokens: tied to one human, usually over-privileged, expiring silently, and dying the day that person leaves.
+
+**Worked example (scenario)**
+```bash
+databricks service-principals create --display-name "prod-etl"
+# grant it exactly: USE catalog + USE schema + MODIFY on target tables
+databricks bundle deploy --target prod   # CI authenticates as the SP
+```
+
+**How the exam asks it**
+> CI deploys nightly; credentials must not depend on any employee's account.
+
+✅ **A service principal with OAuth M2M credentials, least-privilege grants, secret stored in CI.** Traps: "the lead engineer's PAT in a GitHub secret", "a shared admin account", "a personal login used headlessly".""",
+        },
+        {
+            "title": "Concept 3 — Compliance evidence: least privilege plus the audit trail",
+            "section": "Ensuring Data Security and Compliance (10%)",
+            "body": """**Why it matters for the exam:** Compliance questions have two halves. **Prevent** — least privilege: each group gets exactly the grants it needs, through the one central permission model (Unity Catalog). **Prove** — the audit trail: `system.access.audit` records who accessed or changed what, and when, in queryable Delta. The exam pairs them: when a scenario wants both "limited access" and "evidence for the auditor," the answer combines scoped grants with audit tables — not screenshots, not policy documents.
+
+**Worked example (scenario)**
+```sql
+GRANT USE CATALOG ON CATALOG sales TO GROUP sales_analysts;
+GRANT USE SCHEMA ON SCHEMA sales.gold TO GROUP sales_analysts;
+GRANT SELECT ON TABLE sales.gold.orders TO GROUP sales_analysts;
+
+SELECT event_time, user_name, action_name FROM system.access.audit
+WHERE service_name = 'UnityCatalog' AND event_date > current_date() - 90;
+```
+
+**How the exam asks it**
+> An auditor asks how access is limited and what each analyst actually queried over 90 days.
+
+✅ **Least-privilege grants in Unity Catalog + system.access.audit as the queryable evidence.** Traps: "workspace-local ACLs" (the pre-UC model), "a written access policy document" (not evidence), "job run history" (runs, not data access).""",
+        },
+    ],
+    (
+        "professional",
+        "Data Governance (7%)",
+    ): [
+        {
+            "title": "Concept 1 — Lineage, ownership, and grants: the governance triangle",
+            "section": "Data Governance (7%)",
+            "body": """**Why it matters for the exam:** Unity Catalog gives you three automatic superpowers. **Lineage** — every table-to-table (even column-to-column) dependency is captured as queries run; use it before renaming a column to find every downstream consumer in one place. **Ownership** — every object has exactly one owner who can manage and grant on it; production objects should be owned by a **service principal**, not a person, so nothing breaks when someone leaves. **Grants** — readers always need the chain: USE CATALOG → USE SCHEMA → SELECT.
+
+**Worked example (scenario)**
+```sql
+-- who consumes gold.orders.cust_id? lineage shows it (UI or system.access.column_lineage)
+-- owner leaving: transfer to a service principal
+ALTER TABLE gold.orders OWNER TO `app-prod-etl`;
+```
+
+**How the exam asks it**
+> Rename a column safely; also, the owner of every production table is leaving the company.
+
+✅ **Check column-level lineage first, then rename; transfer ownership to a service principal.** Traps: "email the team and ask" (incomplete and stale), "keep a departing owner's token alive" (exactly the anti-pattern), "rebuild the tables" (ownership can be transferred, not rebuilt).""",
+        },
+        {
+            "title": "Concept 2 — Tags: classification that travels with the data",
+            "section": "Data Governance (7%)",
+            "body": """**Why it matters for the exam:** Tags are key-value labels you attach to catalogs, schemas, tables, and even columns — and they're **inherited downward** (a schema tag covers its tables). They power classification at scale: mark PII (`pii=true`), sensitivity levels, or environment, consistently and centrally — and you can then query, report, and drive policy off tags. That's the exam's contrast: a naming convention or a column comment is free-text hope; a tag is structured, inherited, and queryable.
+
+**Worked example (scenario)**
+```sql
+ALTER TABLE hr.payroll MODIFY COLUMN amount SET TAGS ('pii' = 'true', 'sensitivity' = 'high');
+
+-- find every PII column across the workspace:
+SELECT * FROM system.information_schema.tags WHERE tag_key = 'pii';
+```
+
+**How the exam asks it**
+> Consistently mark every object containing PII across hundreds of tables and columns.
+
+✅ **Unity Catalog tags — set at column/table level, inherited down, queryable via information_schema.** Traps: "a pii_ column-name prefix" (convention, not governance), "column comments" (free text, not queryable), "a spreadsheet listing PII tables" (goes stale immediately).""",
+        },
+    ],
+    (
+        "professional",
+        "Debugging and Deploying (10%)",
+    ): [
+        {
+            "title": "Concept 1 — Query profile and EXPLAIN: read the plan, find the cost",
+            "section": "Debugging and Deploying (10%)",
+            "body": """**Why it matters for the exam:** When a query is slow, don't guess — read its plan. The **query profile** (SQL editor / Lakeview / Spark UI) and `EXPLAIN` show the physical plan: where data is **shuffled** (every exchange moves bytes across the network), whether a join **broadcast** or sorted-merged, how many rows each operator emits, and per-stage timings. Reading order that finds most problems: find the exchanges (shuffles) — that's data movement; find the longest bar in the profile — that's where time goes; compare rows in vs out per operator — a row explosion (join fan-out or explode) shows up right there.
+
+**Worked example (scenario)**
+```sql
+EXPLAIN SELECT o.*, d.name FROM orders o JOIN dims d ON o.dim_id = d.id;
+-- plan shows: BroadcastHashJoin (good) vs SortMergeJoin + shuffle (investigate)
+-- profile shows: stage 3 = 82% of total time
+```
+
+**How the exam asks it**
+> Determine why a query takes minutes and where the time goes.
+
+✅ **Open the query profile — per-stage timings, shuffle sizes, and join strategy pinpoint the cost.** Traps: "restart the warehouse" (no diagnosis), "scale up compute" (untreated symptom), "read the notebook logs" (app logs, not query plans).""",
+        },
+        {
+            "title": "Concept 2 — Declarative Automation Bundles: one source, many environments",
+            "section": "Debugging and Deploying (10%)",
+            "body": """**Why it matters for the exam:** A bundle (databricks.yml) declares your jobs, pipelines, and files as code. **Targets** (dev/test/prod) swap per-environment values with one command: `bundle deploy --target prod` deploys prod names, catalog, schedule, and permissions; `--target dev` deploys yours. **Variables** parameterize the differences; **run-as** and permissions are per-target — e.g., prod runs as a service principal while dev runs as you. And the golden rule: if the bundle owns a resource, its settings live in the bundle (through Git) — never edited in the UI, where a deploy would silently revert them.
+
+**Worked example (scenario)**
+```yaml
+variables: { catalog: main }
+targets:
+  dev:  { variables: { catalog: dev_cat } }
+  prod: { variables: { catalog: prod_cat }, run_as: { service_principal_name: etl-sp } }
+```
+
+**How the exam asks it**
+> One pipeline definition, two catalogs, prod scheduled and owned by a service principal.
+
+✅ **One bundle with per-target variables, run-as, and permissions — deploy with --target.** Traps: "two copies of the files edited by hand", "hardcode prod and rewrite for dev", "deploy --force after editing in the UI" (no such merge — the bundle wins).""",
+        },
+        {
+            "title": "Concept 3 — Debugging streams and pipelines: read the metrics, not vibes",
+            "section": "Debugging and Deploying (10%)",
+            "body": """**Why it matters for the exam:** When a stream "runs but nothing updates," the truth is in its metrics — not in restarting things. Streaming **progress** (per micro-batch) reports input rows, processed rows, batch duration, and state size — input rising while processed is flat means falling behind; state growing means a missing watermark. For Lakeflow pipelines, the **event log** plus the dataset view show expectation pass rates, backlogs, and refresh history. And remember the boundary: streaming tables are managed by their pipeline — direct DML against them is an error.
+
+**Worked example (scenario)**
+```python
+q = (spark.readStream.table("events")
+     .writeStream.option("checkpointLocation", chk).toTable("silver"))
+q.lastProgress   # batch duration, inputRowsPerSecond, stateOperators — the truth
+```
+
+**How the exam asks it**
+> A streaming job shows RUNNING but the target table hasn't updated in hours. First step?
+
+✅ **Read the streaming progress metrics (input vs processed rows, batch duration, state size) — or the pipeline event log — to see what it's actually doing.** Traps: "restart and watch" (no evidence), "delete the checkpoint" (reprocesses and duplicates), "increase the trigger rate" (masks the symptom).""",
+        },
+    ],
 }
 
 
