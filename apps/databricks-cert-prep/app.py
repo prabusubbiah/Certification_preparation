@@ -37,7 +37,7 @@ LEVELS = [
     {"label": "Data Engineer Professional", "value": "professional"},
 ]
 PASS_PCT = 70.0
-EXAM_DEFAULTS = {"associate": (20, 60), "professional": (24, 90)}
+EXAM_DEFAULTS = {"associate": 45, "professional": 60}
 
 # ------------------------------------------------------------------ spark
 _spark = None
@@ -1751,7 +1751,7 @@ app.layout = html.Div(
                                                     type="number",
                                                     min=5,
                                                     step=1,
-                                                    value=20,
+                                                    value=45,
                                                     style={"padding": "8px", "borderRadius": "8px", "border": "1px solid #d5dbe4"},
                                                 ),
                                             ],
@@ -1759,13 +1759,13 @@ app.layout = html.Div(
                                         ),
                                         html.Div(
                                             [
-                                                html.Label("Minutes"),
+                                                html.Label("Minutes (auto: 2 per question)"),
                                                 dcc.Input(
                                                     id="exam-mins",
                                                     type="number",
                                                     min=5,
                                                     step=5,
-                                                    value=60,
+                                                    value=90,
                                                     style={"padding": "8px", "borderRadius": "8px", "border": "1px solid #d5dbe4"},
                                                 ),
                                             ],
@@ -1889,6 +1889,11 @@ app.layout = html.Div(
                                     [
                                         html.Button("‹ Prev", id="exam-prev"),
                                         html.Button("Next ›", id="exam-next"),
+                                        html.Button(
+                                            "Pass",
+                                            id="exam-pass",
+                                            title="Skip this question and jump to the next unanswered one",
+                                        ),
                                         html.Button(
                                             "Submit exam",
                                             id="exam-submit",
@@ -2178,12 +2183,24 @@ def render_guide(level):
 # ------------------------------------------------------------------ EXAM
 @app.callback(
     Output("exam-num", "value"),
-    Output("exam-mins", "value"),
     Input("exam-level", "value"),
 )
 def exam_defaults(level):
-    num, mins = EXAM_DEFAULTS.get(level, (20, 60))
-    return num, mins
+    return EXAM_DEFAULTS.get(level, 45)
+
+
+# Real-exam pacing: 2 minutes per question (45 questions -> 90 minutes).
+# The minutes field follows the question count automatically.
+@app.callback(
+    Output("exam-mins", "value"),
+    Input("exam-num", "value"),
+)
+def exam_minutes(num):
+    try:
+        num = int(num)
+    except (TypeError, ValueError):
+        num = 45
+    return max(1, num) * 2
 
 
 # Sets shown in the Practice-exam "Set" dropdown. Every other set stays in
@@ -2404,10 +2421,11 @@ def toggle_exam_views(mode):
     Input("exam-options", "value"),
     Input("exam-prev", "n_clicks"),
     Input("exam-next", "n_clicks"),
+    Input("exam-pass", "n_clicks"),
     Input({"type": "exam-nav", "index": ALL}, "n_clicks"),
     Input("exam-retake", "n_clicks"),
     Input("exam-submit", "n_clicks"),
-    Input("exam-tick", "n_clicks"),
+    Input("exam-tick", "n_intervals"),
     State("exam-level", "value"),
     State("exam-num", "value"),
     State("exam-mins", "value"),
@@ -2418,7 +2436,7 @@ def toggle_exam_views(mode):
     State("exam-result", "data"),
 )
 def exam_mutate(
-    n_start, opt_value, _prev, _next, _nav, _retake, _submit, _tick,
+    n_start, opt_value, _prev, _next, _pass, _nav, _retake, _submit, _tick,
     level, num, mins, domain, difficulty, qset, state, result,
 ):
     tid = ctx.triggered_id
@@ -2479,6 +2497,17 @@ def exam_mutate(
         s["idx"] = min(len(state["qids"]) - 1, state["idx"] + 1)
         return s, no_update, no_update, no_update
 
+    if tid == "exam-pass":  # skip current question, jump to next unanswered
+        s = dict(state)
+        qids, answers, n = state["qids"], state["answers"], len(state["qids"])
+        for off in range(1, n + 1):
+            j = (state["idx"] + off) % n
+            if str(qids[j]) not in answers:
+                s["idx"] = j
+                return s, no_update, no_update, no_update
+        s["idx"] = min(n - 1, state["idx"] + 1)
+        return s, no_update, no_update, no_update
+
     if tid_dict.get("type") == "exam-nav":
         s = dict(state)
         s["idx"] = int(tid_dict["index"])
@@ -2506,7 +2535,7 @@ def exam_mutate(
 @app.callback(
     Output("exam-timer", "children"),
     Output("exam-timer", "className"),
-    Input("exam-tick", "n_clicks"),
+    Input("exam-tick", "n_intervals"),
     State("exam-state", "data"),
 )
 def tick_timer(_n, state):
