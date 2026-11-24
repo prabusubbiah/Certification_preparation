@@ -3340,15 +3340,217 @@ app.layout = html.Div(
                         html.H2("Exam strategy & common pitfalls", className="tips"),
                         dcc.Markdown(
                             """
-#### Pacing and triage
-* The pass bar is **70%** — you don't need a perfect score, you need broad coverage. Never leave a question blank; there is no negative marking.
-* Do **three passes**: first answer everything you know fast (~1 min/question), flag the slow ones, then return. Reserve the final minutes to review flagged questions.
-* Questions are scenario-based. Read the *last sentence* first (the actual ask), then the scenario. Many answers describe real techniques that are still *not what was asked*.
+#### 1. Read every question like a checklist — not a textbook
+Work through every question in this order:
 
-#### Answer-selection heuristics
-* Prefer the **Databricks-recommended best practice**: Unity Catalog governance, managed tables, Delta Lake, built-in functions over UDFs, declarative pipelines over hand-coded orchestration, SQL/declarative over imperative loops.
-* Watch for absolutes ("always", "never", "only") — they are usually wrong.
-* If two options look similar, look for the keyword difference (e.g. *compaction* vs *retention*, *bronze* vs *silver*). The exam loves adjacent concepts.
+① **What is the problem?** → ② **What is the constraint?** → ③ **What is the required outcome?** → ④ **Which Databricks feature solves it?**
+
+Don't immediately jump to the answers — extract the keywords first.
+
+**Example** — *"A company needs to ingest files arriving continuously in cloud storage. The pipeline must automatically discover new files and handle schema changes with minimal maintenance. Which solution is most appropriate?"*
+
+| Keyword | Meaning |
+| --- | --- |
+| Files arriving continuously | Incremental ingestion |
+| Cloud storage | File-based source |
+| Automatically discover new files | Auto Loader |
+| Schema changes | Schema evolution |
+| Minimal maintenance | Managed automation |
+
+Your brain should immediately think: **Auto Loader (`cloudFiles`)** — and not be distracted by COPY INTO, manual Spark reads, or custom file listing.
+
+#### 2. Compress the question — what are they REALLY asking?
+Exam questions often pad 50–70 words of background around a one-line requirement. Ignore the scenery and compress.
+
+**Example** — *"An enterprise has several departments working with data from different source systems. The compliance department requires that only approved users can access certain datasets, and access must be managed centrally with auditing and lineage capabilities."*
+
+The core requirement is: **centralized governance, permissions, auditing and lineage** → your instinct should be **Unity Catalog**.
+
+| Long question | Simplified requirement |
+| --- | --- |
+| 100-word scenario about incoming files | Incremental file ingestion |
+| Long scenario about updates and deletes | CDC |
+| Long scenario about historic customer changes | SCD Type 2 |
+| Long scenario about user access restrictions | Unity Catalog |
+| Long scenario about failed pipeline tasks | Jobs retry |
+| Long scenario about slow query performance | Spark optimization |
+| Long scenario about deployment to multiple environments | CI/CD / Bundles |
+| Long scenario about checking data quality | Expectations |
+
+#### 3. The 5-second decode: P → C → S → F
+Run this mental template on every question until it becomes automatic.
+
+| Letter | Meaning | Ask yourself |
+| --- | --- | --- |
+| **P** | Problem | What problem are they solving? |
+| **C** | Constraint | What restriction matters? |
+| **S** | Solution type | Ingestion, transformation, orchestration, governance or optimization? |
+| **F** | Feature | Which Databricks feature matches? |
+
+**Example** — *"A pipeline receives new files every day. The pipeline should process newly arrived files, avoid unnecessary reloads, and require minimal operational effort."*
+
+P: incremental file ingestion · C: avoid reloads, minimal maintenance · S: file ingestion · F: **Auto Loader**.
+"""
+                        ),
+                        html.H3("The Keyword → Feature technique", className="tips"),
+                        dcc.Markdown(
+                            """
+One of the most useful exam techniques: build problem → feature associations until they are automatic. **Don't memorise only definitions — memorise the relationship between a problem and the feature.**
+
+#### Ingestion & streaming
+| If the question says... | Your brain should think... |
+| --- | --- |
+| Automatically discover new files | Auto Loader |
+| Incremental file ingestion | Auto Loader |
+| Repeatedly ingest files without duplicate processing | COPY INTO or Auto Loader, depending on requirements |
+| Files already processed should not be loaded again | COPY INTO / Auto Loader checkpoint |
+| Continuous processing | Structured Streaming |
+| Process data every few seconds/minutes | Trigger processing / micro-batch |
+| Process once and stop | `availableNow` trigger (batch-like streaming run) |
+| Schema changes in incoming files | Auto Loader schema evolution |
+| Schema inference disabled, JSON | Columns may stay strings when `inferColumnTypes` is false |
+
+#### Change data & slowly changing dimensions
+| If the question says... | Your brain should think... |
+| --- | --- |
+| Change data from a source database | CDC |
+| Insert, update, delete changes | CDC / Auto CDC |
+| Maintain latest records | MERGE / CDC processing |
+| Slowly changing dimension | SCD Type 1 or Type 2 |
+| Historical records retained | SCD Type 2 |
+| Replace existing records | SCD Type 1 |
+
+#### Pipelines, Jobs & orchestration
+| If the question says... | Your brain should think... |
+| --- | --- |
+| Declare pipeline logic | Lakeflow Spark Declarative Pipelines |
+| Data quality checks | Expectations |
+| Fail the pipeline on bad records | Expectation with fail behavior |
+| Drop invalid records | Expectation with drop behavior |
+| Track pipeline execution | Lakeflow Jobs |
+| Dependencies between tasks | Job task dependencies |
+| Execute tasks conditionally | Run if / If-else |
+| Repeat a task for multiple values | For each |
+| Automatically retry failed tasks | Retry configuration |
+
+#### Governance & security
+| If the question says... | Your brain should think... |
+| --- | --- |
+| Table access control | Unity Catalog |
+| Data lineage | Unity Catalog |
+| Restrict access to specific columns | Column masks |
+| Restrict access to specific rows | Row filters |
+
+#### Tables, performance & storage
+| If the question says... | Your brain should think... |
+| --- | --- |
+| Managed table | Databricks manages the data lifecycle and storage |
+| External table | Data stored at an externally managed location |
+| Slow Spark job | Spark UI / execution analysis |
+| Data skew | Skew optimization / AQE |
+| Too much shuffle | Reduce shuffle / optimize execution |
+| Small files | Compaction / optimization |
+| Frequently queried tables | Liquid clustering / data layout optimization depending on workload |
+
+#### Development & deployment
+| If the question says... | Your brain should think... |
+| --- | --- |
+| Git-based deployment | CI/CD |
+| Deploy different configurations per environment | Bundles / targets |
+| Git version control | Git folders |
+| Reusable deployment configurations | Declarative Automation Bundles |
+"""
+                        ),
+                        html.H3("Elimination & option selection", className="tips"),
+                        dcc.Markdown(
+                            """
+#### Eliminate before you decide — you don't always need to know the exact answer
+**Example** — *"A company needs to incrementally ingest newly arriving files from cloud storage while automatically managing file discovery."* Options:
+
+* **A.** `spark.read.format("parquet")` — static batch read; not a fit for automated incremental file discovery ✗
+* **B.** Auto Loader — fits the requirement ✓
+* **C.** Manually list all files — manual maintenance; contradicts automation ✗
+* **D.** Recreate the entire table every day — full reload; unnecessary ✗
+
+**Answer: B** — found by elimination, not certainty.
+
+**Three kinds of wrong answers to identify:**
+1. **Too manual** — the question asks for automated processing, but the option requires manual work.
+2. **Too complicated** — the requirement asks for a simple managed solution, but the option proposes a custom framework.
+3. **Wrong feature category** — the question asks about governance, but the option is a pipeline feature.
+
+#### When two answers look correct — the option-selection hierarchy
+Ask yourself, in order:
+
+1. Does it satisfy the **exact requirement**?
+2. Does it satisfy the **constraint**?
+3. Is it a **native Databricks feature**?
+4. Does it **reduce manual maintenance**?
+5. Is it **simpler** than the alternative?
+
+For many scenarios the preferred solution is: **native managed feature → less custom code → less manual maintenance → meets the exact requirement.** But don't blindly choose the most automated option — some scenarios explicitly require control, custom logic, or a particular execution pattern.
+
+Keep these heuristics in mind too: prefer the Databricks-recommended best practice (Unity Catalog governance, managed tables, built-in functions over UDFs, declarative pipelines over hand-coded orchestration); watch for absolutes ("always", "never", "only") — they are usually wrong; and when two options look similar, hunt for the keyword difference (e.g. *compaction* vs *retention*, *bronze* vs *silver*) — the exam loves adjacent concepts.
+
+#### Words that change the answer
+A single word can completely change the answer. Mentally underline **must, automatically, incrementally, without, only, historical, minimal** — these often determine it.
+
+| Word | Why it matters |
+| --- | --- |
+| Automatically | Look for managed automation |
+| Incrementally | Avoid full reloads |
+| Continuously | Streaming / continuous execution context |
+| Once | One-time execution / `availableNow` trigger |
+| Idempotent | Safe repeated processing |
+| Minimal maintenance | Managed solutions |
+| Historical | SCD Type 2 / history retention |
+| Latest | Current-state data |
+| Exactly once | Checkpointing, idempotency and processing guarantees |
+| Without duplication | Deduplication / idempotent ingestion |
+| Only | Restrictive requirement |
+| Must | Hard requirement |
+| Lowest maintenance | Prefer a managed feature |
+| All records | Watch for completeness |
+| Failed | Retry, troubleshooting or failure behavior |
+| Automatically retry | Retry configuration |
+| Securely | Governance / security |
+| Centrally managed | Unity Catalog or centralized management |
+"""
+                        ),
+                        html.H3("Level-specific traps & quick-reference pitfalls", className="tips"),
+                        dcc.Markdown(
+                            """
+#### Auto Loader vs COPY INTO — don't treat them as interchangeable in scenario questions
+| Requirement | Likely answer |
+| --- | --- |
+| Continuous / incremental ingestion | Auto Loader |
+| Automatically discover incoming files | Auto Loader |
+| Structured streaming ingestion | Auto Loader |
+| Simple SQL-based incremental file loading | COPY INTO |
+| Repeated COPY INTO execution | COPY INTO tracks previously loaded files |
+| Streaming checkpoint-based progress | Auto Loader with checkpoint |
+
+#### SCD Type 1 vs Type 2
+| Type | What happens |
+| --- | --- |
+| Type 1 | Overwrite / update the old value |
+| Type 2 | Preserve history (close the old row, insert a new one) |
+
+If the question says *"maintain historical changes"* — immediately think **Type 2**.
+
+#### Managed vs external tables
+| Managed | External |
+| --- | --- |
+| Databricks manages the table lifecycle and storage | Data files live at an externally managed location |
+| Dropping the table can remove the underlying data, depending on platform behavior | Dropping the table removes metadata, not the underlying external files |
+
+Be careful with wording around locations and deletion behavior.
+
+#### Unity Catalog permission hierarchy
+**Catalog → Schema → Table/View.** Typical permissions: `USE CATALOG`, `USE SCHEMA`, `SELECT`, `CREATE TABLE`, `MODIFY`. To query an object, permissions on the object alone aren't always sufficient — you also need the relevant access on the parent objects.
+
+#### Lakeflow Jobs
+Understand these in scenario format rather than memorising definitions: task dependencies, retry settings, Run if, If/else, For each, job triggers, task values, job parameters.
 
 #### Domain pitfalls to memorize
 * **Delta Lake**: `OPTIMIZE` compacts small files; `VACUUM` removes files past retention. Time travel (`VERSION AS OF`) reads history; `RESTORE TABLE` reverts. Deletion vectors speed DML, not reads.
@@ -3357,6 +3559,59 @@ app.layout = html.Div(
 * **Unity Catalog**: grants chain USE CATALOG → USE SCHEMA → SELECT; managed tables delete data on DROP, external tables keep it; lineage is automatic.
 * **Performance**: AQE re-optimizes at runtime; broadcast small dimension tables; skew → AQE skew handling / salting; cache only what you reuse.
 * **PySpark**: lazy evaluation; narrow vs wide transformations; built-ins beat Python UDFs.
+"""
+                        ),
+                        html.H3("Exam-time strategy", className="tips"),
+                        dcc.Markdown(
+                            """
+* The pass bar is **70%** — broad coverage beats a perfect score. Never leave a question blank; there is no negative marking.
+* Plan for roughly **2 minutes per question** (the Practice tab's timer enforces exactly this pacing: 45 questions → 90 minutes).
+* Questions are scenario-based. Read the *last sentence* first (the actual ask), then the scenario. Many answers describe real techniques that are still *not what was asked*.
+
+**Three rounds, for a 90-minute exam:**
+
+| Round | Action |
+| --- | --- |
+| 0–55 minutes | First pass — answer everything you understand immediately |
+| 55–75 minutes | Revisit questions where you narrowed it down |
+| 75–85 minutes | Review flagged questions |
+| 85–90 minutes | Final review — ensure no question is left unanswered |
+
+**If you are stuck on one question, don't spend 5 minutes on it:**
+
+1. Identify the requirement. 2. Eliminate two options. 3. Choose the best remaining option. 4. Move on.
+"""
+                        ),
+                        html.H3("Study smart", className="tips"),
+                        dcc.Markdown(
+                            """
+#### Study by question patterns, not chapters
+Allocate your preparation roughly according to your exam's published domain weights. For the **Data Engineer Associate** exam:
+
+| Domain | Weight | Priority |
+| --- | --- | --- |
+| Transformation & Modeling | 22% | 🔴 Very high |
+| Data Ingestion | 21% | 🔴 Very high |
+| Lakeflow Jobs | 16% | 🔴 Very high |
+| Governance | 15% | 🔴 High |
+| CI/CD | 10% | 🟠 High |
+| Troubleshooting & Optimization | 10% | 🟠 High |
+| Databricks Platform | 6% | 🟡 Medium |
+
+For the other exams, use the domain weights listed in the Learn tab. Don't spend 3 hours on a topic worth 2–3 questions while ignoring a domain worth 9–10 questions.
+
+#### Train on trap questions
+Beyond conventional mock exams, train with questions designed to confuse you. For every question in the Practice tab, work the full loop:
+
+1. How to read the question
+2. Which keywords matter
+3. What the question is actually asking
+4. Why the correct answer is correct
+5. Why the other three options are wrong
+6. The exam trap
+7. A memory trick to retain the concept
+
+Progress through the difficulty levels: easy → medium (scenario questions) → complex (two answers that look correct, tricky wording) → a full timed 45-question mock exam. The goal isn't merely to know Databricks — it's to become good at recognizing how Databricks exam questions are constructed, so you can decode them under time pressure.
 """
                         ),
                         html.H3("How to study", className="tips"),
