@@ -2811,6 +2811,404 @@ with mlflow.start_run(run_name="agent-v2"):
     ],
 }
 
+# Professional top-up lessons. These extend the existing sections above
+# via .extend() — adding keys again in the dict literal would shadow the
+# original entries (duplicate dict keys keep only the last one).
+LESSONS[("professional", "Data Ingestion & Acquisition (7%)")].extend([
+        {
+            "title": "Concept 4 — Auto Loader schema evolution: addNewColumns vs rescue",
+            "section": "Data Ingestion & Acquisition (7%)",
+            "body": """**Why it matters for the exam:** incoming files change, and the exam tests which evolution mode fits. `addNewColumns` (the default) merges new columns into the schema automatically. `rescue` additionally routes unexpected columns and type mismatches into `_rescued_data` — nothing is lost, nothing fails. `inferColumnTypes` only controls whether inferred JSON columns get real types or stay strings — it does not handle *new* columns.
+
+**Simple example**
+```python
+spark.readStream.format("cloudFiles")
+    .option("cloudFiles.schemaLocation", chk)
+    .option("cloudFiles.schemaEvolutionMode", "rescue")  # keep surprises in _rescued_data
+    .load("s3://landing/orders/")
+```
+
+**How the exam asks it**
+> Unexpected columns appear occasionally; the pipeline must keep running and never lose data.
+
+✅ **Rescue mode — surprises land in `_rescued_data` instead of failing or being dropped.** Traps: "fail fast so someone reviews the schema" (availability loss), "inferColumnTypes handles new columns" (it handles *types*, not new columns).""",
+        },
+        {
+            "title": "Concept 5 — Idempotent backfills: availableNow triggers and checkpoints",
+            "section": "Data Ingestion & Acquisition (7%)",
+            "body": """**Why it matters for the exam:** batch-style streaming is a favorite cost scenario. `trigger(availableNow=True)` processes everything queued since the last run, then stops — you pay for compute only while there is data. The **checkpoint** is what makes reruns safe: it records which files/offsets are done, so a restarted or nightly-scheduled job never reprocesses anything. That combination is effectively-once into Delta without a 24/7 cluster.
+
+**Simple example**
+```python
+stream = (spark.readStream.format("cloudFiles")
+    .option("cloudFiles.schemaLocation", chk)
+    .load("s3://landing/orders/"))
+(stream.writeStream
+    .option("checkpointLocation", chk)      # resume state lives here
+    .trigger(availableNow=True)              # run to completion, then stop
+    .toTable("silver.orders")
+    .awaitTermination())
+```
+
+**How the exam asks it**
+> Files arrive once per night; the pipeline must load exactly the new files, never duplicates, at the lowest compute cost.
+
+✅ **Auto Loader + `availableNow` trigger + checkpoint, scheduled nightly.** Traps: "COPY INTO with a fresh table" (loses history and duplicate-tracking), "a 24/7 micro-batch with 1-second triggers" (paying all day for nightly data).""",
+        },
+])
+
+LESSONS[("professional", "Data Transformation, Cleansing, and Quality (10%)")].extend([
+        {
+            "title": "Concept 4 — Quarantine bad rows instead of dropping them",
+            "section": "Data Transformation, Cleansing, and Quality (10%)",
+            "body": """**Why it matters for the exam:** expectations come in four behaviors, and quarantine is the professional answer to \"keep bad data but keep going\". `expect` only records metrics, `expect_or_drop` discards bad rows, `expect_or_fail` halts the pipeline, and `expect_or_quarantine` routes failing rows to a separate quarantine dataset for review while valid rows flow on.
+
+**Simple example**
+```python
+@dlt.table("orders_clean")
+@dlt.expect_or_quarantine("valid_amount", "amount > 0")
+@dlt.expect_or_quarantine("has_customer", "customer_id IS NOT NULL")
+def orders_clean():
+    return dlt.read("orders_silver")
+```
+
+**How the exam asks it**
+> Invalid records must be retained for review, but the pipeline must continue processing valid ones.
+
+✅ **`expect_or_quarantine` — bad rows land in a quarantine table, good rows proceed.** Traps: "expect_or_drop with a nightly audit" (rows are gone), "expect with metrics" (records, but ships the bad rows downstream).""",
+        },
+        {
+            "title": "Concept 5 — Silver survivorship: dedupe and latest-wins",
+            "section": "Data Transformation, Cleansing, and Quality (10%)",
+            "body": """**Why it matters for the exam:** silver must hold ONE trusted version of each entity, and the exam tests how you get there. Two patterns: **latest-wins dedup** — rank rows per key by event time with `row_number()` and keep rank 1; and **MERGE upsert** — update the existing row (or close-and-insert for Type 2). `DISTINCT` is not a survivorship rule: it only removes *fully identical* rows, not same-key versions with different values.
+
+**Simple example**
+```python
+from pyspark.sql import functions as F, Window
+w = Window.partitionBy("customer_id").orderBy(F.col("event_ts").desc())
+latest = (updates.withColumn("rn", F.row_number().over(w))
+                 .filter("rn = 1").drop("rn"))
+```
+
+**How the exam asks it**
+> Late-arriving updates must leave exactly one current row per key.
+
+✅ **Window `row_number` ordered by event time (keep rn = 1), or a keyed MERGE.** Traps: "`DISTINCT` on all columns" (same-key different-value rows survive), "truncate and reload daily" (fragile, loses history).""",
+        },
+])
+
+LESSONS[("professional", "Data Sharing and Federation (5%)")].extend([
+        {
+            "title": "Concept 3 — Delta Sharing recipient types: open vs Databricks-to-Databricks",
+            "section": "Data Sharing and Federation (5%)",
+            "body": """**Why it matters for the exam:** who is on the other side decides the recipient type. An **open recipient** is any organization — it authenticates with a **token**, gets a **credential (activation)** file, and can even re-share through a provider. A **Databricks-to-Databricks recipient** lives in another Databricks workspace and authenticates automatically via its own identity — no tokens to manage. In both cases the provider adds tables to a **share**, then grants the share to the recipient; data stays live (no copies) and stays in Delta format.
+
+**Simple example**
+```python
+# provider side
+shares.create(name="partner_share")
+shares.update(name="partner_share", add=[SchemaTable("main", "sales", "orders")])
+recipients.create(name="acme", sharing_code=..., authentication_type="TOKEN")
+```
+
+**How the exam asks it**
+> An external company on its own platform needs selected tables without copies or storage credentials.
+
+✅ **Delta Sharing: share + open (token) recipient.** Traps: "grant them SELECT on the tables" (they are not in your account), "nightly cloud-storage exports" (copies, keys, drift).""",
+        },
+        {
+            "title": "Concept 4 — Share a subset: filtered views, not whole tables",
+            "section": "Data Sharing and Federation (5%)",
+            "body": """**Why it matters for the exam:** a common trap — **row filters and column masks are NOT enforced on shared data**. If a recipient must see only their region, the governed pattern is a **view** with the predicate (`WHERE region = ...`) built on top of the table, and only the **view** (never the base table) added to the share. The recipient queries the view name and gets exactly the filtered rows, live.
+
+**Simple example**
+```sql
+CREATE VIEW sales.orders_emea AS
+SELECT * FROM sales.orders WHERE region = 'EMEA';
+-- provider: add sales.orders_emea (the view) to the share — not sales.orders
+```
+
+**How the exam asks it**
+> Each partner must see only its own region's rows from a shared table.
+
+✅ **A filtered view per recipient, added to the share instead of the base table.** Traps: "apply a row filter to the shared table" (not enforced over sharing), "share everything and trust the partner" (the wrong answer the exam is fishing for).""",
+        },
+])
+
+LESSONS[("professional", "Monitoring and Alerting (10%)")].extend([
+        {
+            "title": "Concept 4 — System tables: your monitoring source of truth",
+            "section": "Monitoring and Alerting (10%)",
+            "body": """**Why it matters for the exam:** \"what do you query to find X\" is a recurring professional question, and the answer is usually a system table. `system.query.history` — every SQL statement with user, duration, and text. `system.billing.usage` — spend by SKU, cluster, and **tag** (cost attribution). `system.access.audit` — who did what, when (DDL, logins, grants). `system.access.table_lineage` — which tables feed which.
+
+**Simple example**
+```sql
+SELECT user_name, statement_text, execution_time_ms
+FROM system.query.history
+WHERE start_time BETWEEN '2026-01-01' AND '2026-01-08'
+  AND user_name = 'analyst@corp.com'
+```
+
+**How the exam asks it**
+> Security needs exactly which statements a user ran last week.
+
+✅ **`system.query.history` filtered by user and time — statement text included.** Traps: "driver logs" (crashes, not statements), "billing usage" (money, not queries).""",
+        },
+        {
+            "title": "Concept 5 — Alerts and streaming progress: monitoring without watching",
+            "section": "Monitoring and Alerting (10%)",
+            "body": """**Why it matters for the exam:** good pipelines tell you when they are unhappy. **Job alerts** fire an email/webhook when a job fails or times out — no custom watchers. **Streaming progress** exposes `inputRowsPerSecond`, `processRowsPerSecond`, and batch duration per micro-batch — the native way to catch lag and skew instead of counting sink rows. Query the progress via the run's StreamingQuery object or a `StreamingQueryListener`.
+
+**Simple example**
+```python
+q = stream.writeStream.option("checkpointLocation", chk).toTable("silver.orders")
+last = q.lastProgress            # {'inputRowsPerSecond': 950.0, 'batchDuration': 1200, ...}
+```
+
+**How the exam asks it**
+> The team must know immediately when the nightly job fails.
+
+✅ **Configure a job alert with an email destination.** Traps: "a second job that polls the first job's status" (build vs buy backwards), "check the UI each morning" (that is not monitoring).""",
+        },
+])
+
+LESSONS[("professional", "Ensuring Data Security and Compliance (10%)")].extend([
+        {
+            "title": "Concept 4 — Column masks in practice",
+            "section": "Ensuring Data Security and Compliance (10%)",
+            "body": """**Why it matters for the exam:** a **column mask** is a function evaluated at read time on one column — no copies, no overwrites. The classic pattern checks group membership: `is_account_group_member('PII-Admins')` returns the raw value for admins and a masked value for everyone else. **Row filters** are the sibling feature — a `WHERE`-style function on the whole row — don't confuse the two: masks answer \"can you see this COLUMN\", filters answer \"can you see this ROW\".
+
+**Simple example**
+```sql
+CREATE OR REPLACE FUNCTION mask_email(v STRING)
+RETURN CASE WHEN is_account_group_member('PII-Admins')
+            THEN v
+            ELSE regexp_replace(v, '^.*( @.*)$', 'j***$1') END;
+
+ALTER TABLE main.hr.employees ALTER COLUMN email
+SET MASK mask_email;
+```
+
+**How the exam asks it**
+> Analysts must see masked emails; only the PII team sees real ones.
+
+✅ **A column mask function using `is_account_group_member`, applied to the column.** Traps: "a masked copy of the table" (drift + duplication), "a row filter on email" (wrong feature — that filters rows).""",
+        },
+        {
+            "title": "Concept 5 — Service principals: auth that outlives people",
+            "section": "Ensuring Data Security and Compliance (10%)",
+            "body": """**Why it matters for the exam:** anything scheduled — jobs, pipelines, apps — should authenticate as a **service principal** with OAuth, never as a person. Why the exam cares: personal tokens die when people leave or rotate roles; shared admin accounts break least privilege and audit trails; a service principal has its own identity, its own scoped grants, and every action is attributed to it in the audit log. In Unity Catalog you can even transfer ownership of production assets to a service principal or group so nothing depends on one human.
+
+**Simple example**
+```
+job cluster / pipeline / app → authenticates as:
+service principal 'sp-prod-orders' (OAuth, secret rotated centrally)
+grants: SELECT on main.sales.*, USE on catalog+schema
+```
+
+**How the exam asks it**
+> A scheduled pipeline must authenticate without depending on any individual's account.
+
+✅ **A service principal with OAuth credentials.** Traps: "the scheduler's personal access token" (person-dependent), "a shared admin login" (least-privilege violation).""",
+        },
+])
+
+LESSONS[("professional", "Data Governance (7%)")].extend([
+        {
+            "title": "Concept 3 — Lineage: where the data came from",
+            "section": "Data Governance (7%)",
+            "body": """**Why it matters for the exam:** Unity Catalog captures **lineage automatically** — every table, view, and pipeline writes its inputs/outputs into lineage tables like `system.access.table_lineage`. The exam's version: \"an analyst must trace a gold table to its sources\" → lineage, not tribal knowledge, not comments. Lineage is also the backbone for impact analysis: before changing a silver column, you can see everything downstream that consumes it.
+
+**Simple example**
+```sql
+SELECT source_table_full_name, target_table_full_name, entity_type
+FROM system.access.table_lineage
+WHERE target_table_full_name = 'main.gold.revenue_monthly';
+```
+
+**How the exam asks it**
+> Which mechanism shows where a gold table's data originates?
+
+✅ **Unity Catalog lineage (captured automatically, queryable via system tables).** Traps: "the table comment" (prose, not provenance), "ask the team" (not governance).""",
+        },
+        {
+            "title": "Concept 4 — Ownership, stewardship, and tags",
+            "section": "Data Governance (7%)",
+            "body": """**Why it matters for the exam:** governance questions are really ownership questions. **Every UC object has exactly one owner** — transfer it with `ALTER ... SET OWNER TO` and point it at an **account group** (not an individual) so stewardship survives people. **UC tags** classify assets (PII, domain, sensitivity) for reporting and can drive tag-based policies; naming conventions are culture, not governance.
+
+**Simple example**
+```sql
+ALTER SCHEMA main.sales SET OWNER TO `data-stewards`;
+ALTER TABLE main.sales.orders SET TAG ('pii' = 'false', 'domain' = 'finance');
+```
+
+**How the exam asks it**
+> A stewardship team must formally own all tables in a schema.
+
+✅ **`ALTER ... SET OWNER TO` the team's account group.** Traps: "grant them MODIFY" (rights without responsibility), "copy the tables to their schema" (forks provenance).""",
+        },
+])
+
+LESSONS[("professional", "Debugging and Deploying (10%)")].extend([
+        {
+            "title": "Concept 4 — Read the Spark UI and driver logs when things fail",
+            "section": "Debugging and Deploying (10%)",
+            "body": """**Why it matters for the exam:** when a cell shows a generic error, the exam wants to know where the truth lives. The **driver log** carries the full stack trace (including Python UDF tracebacks). The **Spark UI** breaks the job into stages and tasks: which stage is slow, how many tasks failed and why (OOM, shuffle fetch), and whether a straggler means **skew**. Note `df.explain()` shows the plan, but runtime failures live in the UI/logs.
+
+**Simple example**
+```
+Notebook: generic error → check:
+1. Driver log: full Python stack trace
+2. Spark UI → failed stage → task stderr
+3. Explain/plan: is the join strategy or shuffle what you expected?
+```
+
+**How the exam asks it**
+> A task fails with a Python exception; the cell shows only a summary error. Where is the full traceback?
+
+✅ **The driver log / Spark UI task stderr.** Traps: "query history" (statements, not failures), "the audit log" (who, not why).""",
+        },
+        {
+            "title": "Concept 5 — Testing pipelines: pytest with fixture DataFrames",
+            "section": "Debugging and Deploying (10%)",
+            "body": """**Why it matters for the exam:** professional pipelines ship with tests. The pattern: transformation functions take and return DataFrames, so tests build **small fixture DataFrames** and assert on the output — fast, deterministic, runnable in CI against a tiny cluster. Tests must not depend on absolute paths or a fixed catalog name: parameterize those (job parameters, bundle variables) so the same code runs in dev, CI, and prod.
+
+**Simple example**
+```python
+def test_latest_wins(spark):
+    df = spark.createDataFrame([(1, 5, 'v1'), (1, 9, 'v2')], 'id event_ts val'.split())
+    out = keep_latest(df)          # the function under test
+    assert out.count() == 1 and out.first()['val'] == 'v2'
+```
+
+**How the exam asks it**
+> Tests pass locally but fail in CI because paths and catalogs are hardcoded.
+
+✅ **Parameterize environment values; run fixture-based tests in CI before deploy.** Traps: "duplicate the notebooks for CI" (guaranteed drift), "remove the failing tests" (the exam's joke option).""",
+        },
+])
+
+LESSONS[("professional", "Cost & Performance Optimisation (13%)")].extend([
+        {
+            "title": "Concept 5 — AQE: the free performance win",
+            "section": "Cost & Performance Optimisation (13%)",
+            "body": """**Why it matters for the exam:** Adaptive Query Execution re-optimizes at runtime, and three exam-favorite effects: **coalescing shuffle partitions** (no more 20,000 tiny output files from a skewed groupBy), **skew join handling** (splitting a lopsided partition into balanced tasks), and **join strategy switching** (converting a planned shuffle join into a broadcast when one side turns out small). All of it is automatic once enabled — AQE is usually the first answer for \"the join is slow and one task lags forever\".
+
+**Simple example**
+```sql
+SET spark.sql.adaptive.enabled = true;
+-- runtime: 200 shuffle partitions → coalesced to the real size;
+-- a 90%-one-key join → split into balanced tasks
+```
+
+**How the exam asks it**
+> One join task runs for ages while others finish; the key distribution is lopsided.
+
+✅ **AQE skew join handling (or manual key salting).** Traps: "repartition to 1" (the opposite), "broadcast the huge table" (worse).""",
+        },
+        {
+            "title": "Concept 6 — Cost attribution and cluster policies",
+            "section": "Cost & Performance Optimisation (13%)",
+            "body": """**Why it matters for the exam:** two knobs control spend. **Attribution**: tag jobs/clusters with team tags — `system.billing.usage` carries those tags, so per-team cost is a query, not a spreadsheet. **Control**: **cluster policies** cap what users can create (max hours, allowed instance types, auto-termination) so cost rules are enforced at creation time rather than audited afterwards. Autoscaling + auto-termination handle idle waste; spot workers cut compute price for fault-tolerant workloads.
+
+**Simple example**
+```sql
+SELECT tags['team'], sum(usage_quantity * usage_unit_price) AS spend
+FROM system.billing.usage
+WHERE usage_date >= '2026-01-01' GROUP BY tags['team'];
+```
+
+**How the exam asks it**
+> Finance needs each team's workspace compute spend.
+
+✅ **Team tags on jobs/clusters, rolled up from `system.billing.usage`.** Traps: "name clusters after teams" (names aren't reportable), "one workspace per team" (organizational sledgehammer).""",
+        },
+    ])
+
+LESSONS[("professional", "Data Modelling (6%)")].extend([
+        {
+            "title": "Concept 4 — As-of joins: matching facts to the right SCD2 row",
+            "section": "Data Modelling (6%)",
+            "body": """**Why it matters for the exam:** an SCD Type 2 dimension holds many versions per customer, so a fact must join the version that was current **at the event time** — a range join on the validity window, not a plain key join and not the current row.
+
+**Simple example**
+```sql
+SELECT f.order_id, d.region
+FROM gold.fact_orders f
+JOIN gold.dim_customer d
+  ON f.customer_key = d.customer_key
+ AND f.order_date BETWEEN d.valid_from AND d.valid_to
+```
+
+**How the exam asks it**
+> Reports must show each customer's region as it was on the order date.
+
+✅ **As-of join on the validity window (key + date BETWEEN valid_from AND valid_to).** Traps: "join on is_current = true" (today's region — wrong history), "join on the key only" (fan-out duplicates across versions).""",
+        },
+        {
+            "title": "Concept 5 — Choosing the fact grain",
+            "section": "Data Modelling (6%)",
+            "body": """**Why it matters for the exam:** the fact grain is the lowest level any report needs — typically **one row per order line**. Everything coarser loses the ability to decompose (a monthly customer total can never answer by-product questions), and anything finer is detail nobody asked for. Aggregate views can always roll up from a fine grain; the reverse is impossible.
+
+**Simple example**
+```sql
+CREATE TABLE gold.fact_order_lines (
+  order_line_id BIGINT, order_id BIGINT,
+  customer_key INT, product_key INT, date_key INT,
+  quantity INT, revenue DECIMAL(10,2)   -- grain: one row per order line
+);
+```
+
+**How the exam asks it**
+> A model must support revenue by product, by customer, and by month.
+
+✅ **One row per order line — all three views aggregate from it.** Traps: "a monthly customer aggregate is simpler" (cannot decompose by product), "one row per order" (multi-product orders cannot split).""",
+        },
+])
+
+LESSONS[("professional", "Data Sharing and Federation (5%)")].extend([
+        {
+            "title": "Concept 5 — Lakehouse Federation: query live external data",
+            "section": "Data Sharing and Federation (5%)",
+            "body": """**Why it matters for the exam:** when analysts must query an external database (PostgreSQL, MySQL, and others) from Databricks SQL, the answer is **Lakehouse Federation**: a governed **connection** plus a **foreign catalog** that mirrors the remote database. Queries run with predicate **pushdown** against the live source — no copies, no nightly imports, and the data stays governed in Unity Catalog.
+
+**Simple example**
+```sql
+CREATE CONNECTION pg_conn TYPE POSTGRESQL
+  OPTIONS (host '...', port '5432', user '...', password '...');
+
+CREATE FOREIGN CATALOG pg_catalog USING CONNECTION pg_conn;
+-- then: SELECT * FROM pg_catalog.public.orders LIMIT 10;
+```
+
+**How the exam asks it**
+> Analysts need live PostgreSQL tables in Databricks SQL without copying data.
+
+✅ **A connection + foreign catalog (Lakehouse Federation).** Traps: "spark.read.jdbc per query" (a cluster per query, no governance), "nightly CSV import" (copies that go stale).""",
+        },
+])
+
+LESSONS[("professional", "Data Governance (7%)")].extend([
+        {
+            "title": "Concept 5 — The three-level namespace and the grant chain",
+            "section": "Data Governance (7%)",
+            "body": """**Why it matters for the exam:** every UC object lives at **catalog.schema.object**, and access gates at every level: to query a table a user needs **SELECT on the object plus USE CATALOG on the catalog and USE SCHEMA on the schema**. A user with SELECT alone gets a permission error — the classic exam symptom. Grants do not cascade down automatically; parents gate visibility, and the least-privilege pattern grants exactly what each level needs.
+
+**Simple example**
+```sql
+GRANT USE CATALOG ON CATALOG main TO `analysts`;
+GRANT USE SCHEMA ON SCHEMA main.sales TO `analysts`;
+GRANT SELECT ON TABLE main.sales.orders TO `analysts`;
+```
+
+**How the exam asks it**
+> A user has SELECT on a table but still cannot query it.
+
+✅ **Missing USE CATALOG / USE SCHEMA on the parents.** Traps: "SELECT alone is sufficient" (it is not), "grant ALL PRIVILEGES on the catalog" (massively over-privileged).""",
+        },
+])
+
+
 
 # Official exam sections ("The exam covers") parsed from the guide concepts.
 SECTIONS = {
@@ -3875,6 +4273,7 @@ FEATURED_SETS = {
     "DataBricks-Practice-exam(1).pdf",
     "Generative AI Engineer — Expected Exam Bank (66)",
     "Data Engineer Professional — Core Bank (37)",
+    "Data Engineer Professional — Complex Scenarios (45)",
 }
 
 
