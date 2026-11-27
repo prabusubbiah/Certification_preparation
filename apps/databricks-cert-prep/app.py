@@ -3888,30 +3888,43 @@ One of the most useful exam techniques: build problem → feature associations u
 #### Eliminate before you decide — you don't always need to know the exact answer
 **Example** — *"A company needs to incrementally ingest newly arriving files from cloud storage while automatically managing file discovery."* Options:
 
-* **A.** `spark.read.format("parquet")` — static batch read; not a fit for automated incremental file discovery ✗
-* **B.** Auto Loader — fits the requirement ✓
-* **C.** Manually list all files — manual maintenance; contradicts automation ✗
-* **D.** Recreate the entire table every day — full reload; unnecessary ✗
+| Option | Verdict | Why |
+| --- | --- | --- |
+| A. `spark.read.format("parquet")` | ✗ | Static batch read; not a fit for automated incremental file discovery |
+| B. Auto Loader | ✓ | Fits the requirement — managed, incremental, automatic discovery |
+| C. Manually list all files | ✗ | Manual maintenance; contradicts automation |
+| D. Recreate the entire table every day | ✗ | Full reload; unnecessary |
 
 **Answer: B** — found by elimination, not certainty.
 
 **Three kinds of wrong answers to identify:**
-1. **Too manual** — the question asks for automated processing, but the option requires manual work.
-2. **Too complicated** — the requirement asks for a simple managed solution, but the option proposes a custom framework.
-3. **Wrong feature category** — the question asks about governance, but the option is a pipeline feature.
+
+| Wrong-answer type | Signal |
+| --- | --- |
+| Too manual | The question asks for automated processing, but the option requires manual work |
+| Too complicated | The requirement asks for a simple managed solution, but the option proposes a custom framework |
+| Wrong feature category | The question asks about governance, but the option is a pipeline feature |
 
 #### When two answers look correct — the option-selection hierarchy
 Ask yourself, in order:
 
-1. Does it satisfy the **exact requirement**?
-2. Does it satisfy the **constraint**?
-3. Is it a **native Databricks feature**?
-4. Does it **reduce manual maintenance**?
-5. Is it **simpler** than the alternative?
+| # | Question to ask |
+| --- | --- |
+| 1 | Does it satisfy the **exact requirement**? |
+| 2 | Does it satisfy the **constraint**? |
+| 3 | Is it a **native Databricks feature**? |
+| 4 | Does it **reduce manual maintenance**? |
+| 5 | Is it **simpler** than the alternative? |
 
 For many scenarios the preferred solution is: **native managed feature → less custom code → less manual maintenance → meets the exact requirement.** But don't blindly choose the most automated option — some scenarios explicitly require control, custom logic, or a particular execution pattern.
 
-Keep these heuristics in mind too: prefer the Databricks-recommended best practice (Unity Catalog governance, managed tables, built-in functions over UDFs, declarative pipelines over hand-coded orchestration); watch for absolutes ("always", "never", "only") — they are usually wrong; and when two options look similar, hunt for the keyword difference (e.g. *compaction* vs *retention*, *bronze* vs *silver*) — the exam loves adjacent concepts.
+Keep these heuristics in mind too:
+
+| Heuristic | Detail |
+| --- | --- |
+| Prefer the Databricks-recommended best practice | Unity Catalog governance, managed tables, built-in functions over UDFs, declarative pipelines over hand-coded orchestration |
+| Watch for absolutes ("always", "never", "only") | They are usually wrong |
+| When two options look similar | Hunt for the keyword difference (e.g. *compaction* vs *retention*, *bronze* vs *silver*) — the exam loves adjacent concepts |
 
 #### Words that change the answer
 A single word can completely change the answer. Mentally underline **must, automatically, incrementally, without, only, historical, minimal** — these often determine it.
@@ -3976,18 +3989,29 @@ If the question says *"maintain historical changes"* — immediately think **Typ
 Be careful with wording around locations and deletion behavior.
 
 #### Unity Catalog permission hierarchy
-**Catalog → Schema → Table/View.** Typical permissions: `USE CATALOG`, `USE SCHEMA`, `SELECT`, `CREATE TABLE`, `MODIFY`. To query an object, permissions on the object alone aren't always sufficient — you also need the relevant access on the parent objects.
+**Catalog → Schema → Table/View.**
+
+| Hierarchy level | Typical permissions |
+| --- | --- |
+| Catalog | `USE CATALOG` |
+| Schema | `USE SCHEMA` |
+| Table / View | `SELECT`, `CREATE TABLE`, `MODIFY` |
+
+To query an object, permissions on the object alone aren't always sufficient — you also need the relevant access on the parent objects.
 
 #### Lakeflow Jobs
 Understand these in scenario format rather than memorising definitions: task dependencies, retry settings, Run if, If/else, For each, job triggers, task values, job parameters.
 
 #### Domain pitfalls to memorize
-* **Delta Lake**: `OPTIMIZE` compacts small files; `VACUUM` removes files past retention. Time travel (`VERSION AS OF`) reads history; `RESTORE TABLE` reverts. Deletion vectors speed DML, not reads.
-* **Streaming**: watermarks bound late data and evict state; `availableNow=True` = process everything then stop; checkpoint location = resumability + effectively-once semantics into Delta.
-* **Pipelines (SDP)**: `expect` keeps bad records and reports metrics, `expect_or_drop` removes them; streaming tables are incremental, materialized views are fully recomputed.
-* **Unity Catalog**: grants chain USE CATALOG → USE SCHEMA → SELECT; managed tables delete data on DROP, external tables keep it; lineage is automatic.
-* **Performance**: AQE re-optimizes at runtime; broadcast small dimension tables; skew → AQE skew handling / salting; cache only what you reuse.
-* **PySpark**: lazy evaluation; narrow vs wide transformations; built-ins beat Python UDFs.
+
+| Domain | Pitfalls to memorize |
+| --- | --- |
+| Delta Lake | `OPTIMIZE` compacts small files; `VACUUM` removes files past retention. Time travel (`VERSION AS OF`) reads history; `RESTORE TABLE` reverts. Deletion vectors speed DML, not reads |
+| Streaming | Watermarks bound late data and evict state; `availableNow=True` = process everything then stop; checkpoint location = resumability + effectively-once semantics into Delta |
+| Pipelines (SDP) | `expect` keeps bad records and reports metrics, `expect_or_drop` removes them; streaming tables are incremental, materialized views are fully recomputed |
+| Unity Catalog | Grants chain USE CATALOG → USE SCHEMA → SELECT; managed tables delete data on DROP, external tables keep it; lineage is automatic |
+| Performance | AQE re-optimizes at runtime; broadcast small dimension tables; skew → AQE skew handling / salting; cache only what you reuse |
+| PySpark | Lazy evaluation; narrow vs wide transformations; built-ins beat Python UDFs |
 """
                         ),
                         html.H3("Revision gotchas — exactly what happens", className="tips"),
@@ -4071,9 +4095,11 @@ A rapid-fire list of precise behaviors — the details exam questions exploit. S
                         html.H3("Exam-time strategy", className="tips"),
                         dcc.Markdown(
                             """
-* The pass bar is **70%** — broad coverage beats a perfect score. Never leave a question blank; there is no negative marking.
-* Plan for roughly **2 minutes per question** (the Practice tab's timer enforces exactly this pacing: 45 questions → 90 minutes).
-* Questions are scenario-based. Read the *last sentence* first (the actual ask), then the scenario. Many answers describe real techniques that are still *not what was asked*.
+| Rule | Why it matters |
+| --- | --- |
+| The pass bar is **70%** | Broad coverage beats a perfect score. Never leave a question blank — there is no negative marking |
+| Roughly **2 minutes per question** | The Practice tab's timer enforces exactly this pacing: 45 questions → 90 minutes |
+| Read the *last sentence* first | Questions are scenario-based — read the actual ask, then the scenario. Many answers describe real techniques that are still *not what was asked* |
 
 **Three rounds, for a 90-minute exam:**
 
@@ -4086,7 +4112,12 @@ A rapid-fire list of precise behaviors — the details exam questions exploit. S
 
 **If you are stuck on one question, don't spend 5 minutes on it:**
 
-1. Identify the requirement. 2. Eliminate two options. 3. Choose the best remaining option. 4. Move on.
+| Step | Action |
+| --- | --- |
+| 1 | Identify the requirement |
+| 2 | Eliminate two options |
+| 3 | Choose the best remaining option |
+| 4 | Move on |
 """
                         ),
                                     ],
@@ -4118,13 +4149,15 @@ For the other exams, use the domain weights listed in the Learn tab. Don't spend
 #### Train on trap questions
 Beyond conventional mock exams, train with questions designed to confuse you. For every question in the Practice tab, work the full loop:
 
-1. How to read the question
-2. Which keywords matter
-3. What the question is actually asking
-4. Why the correct answer is correct
-5. Why the other three options are wrong
-6. The exam trap
-7. A memory trick to retain the concept
+| Step | What to work through |
+| --- | --- |
+| 1 | How to read the question |
+| 2 | Which keywords matter |
+| 3 | What the question is actually asking |
+| 4 | Why the correct answer is correct |
+| 5 | Why the other three options are wrong |
+| 6 | The exam trap |
+| 7 | A memory trick to retain the concept |
 
 Progress through the difficulty levels: easy → medium (scenario questions) → complex (two answers that look correct, tricky wording) → a full timed 45-question mock exam. The goal isn't merely to know Databricks — it's to become good at recognizing how Databricks exam questions are constructed, so you can decode them under time pressure.
 """
@@ -4132,11 +4165,13 @@ Progress through the difficulty levels: easy → medium (scenario questions) →
                         html.H3("How to study", className="tips"),
                         dcc.Markdown(
                             """
-1. **Get hands-on.** These exams test applied scenarios, not definitions. Reproduce every concept in a notebook — MERGE, time travel, watermarks, expectations, grants.
-2. **Use the Learn tab daily** (spaced repetition beats cramming) and take a **timed mock exam every few days**. Review every wrong answer's explanation — that's where the learning happens.
-3. **Chase your weakest domain.** The results screen ranks domains by accuracy; spend your next study session on the bottom of that list.
-4. **Skim the official docs for each domain** — Databricks exams are closely aligned with current documented best practice.
-5. **Use the official AI Prep Guide** to build your personalized prep plan (linked in the Learn tab).
+| # | Principle |
+| --- | --- |
+| 1 | **Get hands-on.** These exams test applied scenarios, not definitions. Reproduce every concept in a notebook — MERGE, time travel, watermarks, expectations, grants |
+| 2 | **Use the Learn tab daily** (spaced repetition beats cramming) and take a **timed mock exam every few days**. Review every wrong answer's explanation — that's where the learning happens |
+| 3 | **Chase your weakest domain.** The results screen ranks domains by accuracy; spend your next study session on the bottom of that list |
+| 4 | **Skim the official docs for each domain** — Databricks exams are closely aligned with current documented best practice |
+| 5 | **Use the official AI Prep Guide** to build your personalized prep plan (linked in the Learn tab) |
 
 **Official resources**
 - [AI Prep Guide (any Databricks certification)](https://www.databricks.com/sites/default/files/2026-06/ai-prep-guide-any-databricks-certification.pdf)
