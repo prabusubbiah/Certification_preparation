@@ -3959,6 +3959,76 @@ Understand these in scenario format rather than memorising definitions: task dep
 * **PySpark**: lazy evaluation; narrow vs wide transformations; built-ins beat Python UDFs.
 """
                         ),
+                        html.H3("Revision gotchas — exactly what happens", className="tips"),
+                        dcc.Markdown(
+                            """
+A rapid-fire list of precise behaviors — the details exam questions exploit. Skim this the day before the exam: each row is a fact that turns a 50/50 guess into a certain answer.
+
+#### Ingestion — Auto Loader, COPY INTO, Lakeflow Connect
+| Trap | What actually happens |
+| --- | --- |
+| New column arrives, schema inferred (`addNewColumns` default) | Stream **fails once**, the schema file is updated, and it works after a restart. Columns are only ever **added** — an existing column's type is never changed |
+| Type mismatch (e.g. `12.5` into a BIGINT column) | The value becomes **NULL** and lands in `_rescued_data` — the stream **keeps running** |
+| `schemaLocation` vs `checkpointLocation` | Schema location = stored schema; checkpoint = **which files were processed**. Delete the checkpoint and every file is ingested again (duplicates in append mode) |
+| JSON/CSV schema inference | All columns come back as **STRING** unless `cloudFiles.inferColumnTypes` is true or schemaHints / an explicit schema is used. With an explicit schema, the default evolution mode is **none** |
+| New column on the target Delta table | The **target** needs `mergeSchema` = true to accept the new column — source and target schemas are separate |
+| Millions of files, or non-alphabetical file names | Use **file notification mode** — incremental listing assumes alphabetical order |
+| An already-loaded file's content changes | COPY INTO is idempotent **by file path**: the changed content is skipped; `COPY_OPTIONS ('force' = 'true')` reloads |
+| `trigger(availableNow=True)` vs `processingTime` | availableNow processes the backlog in batches **then stops**; processingTime runs forever |
+| SaaS source (Salesforce, etc.) | **Lakeflow Connect** managed connector — Auto Loader and COPY INTO read files from cloud storage |
+
+#### Transformation & Delta
+| Trap | What actually happens |
+| --- | --- |
+| Latest row per key | `ROW_NUMBER() OVER (PARTITION BY key ORDER BY ts DESC) = 1` — `dropDuplicates` after `orderBy` is **not guaranteed** |
+| `NOT IN` with a NULL in the subquery | Returns **nothing** — use LEFT ANTI JOIN or NOT EXISTS |
+| `explode` on empty or NULL arrays | Those rows are **dropped** — use `explode_outer` to keep them |
+| Nested TRANSFORM / FILTER | Evaluate from the **inside out** |
+| Deleting target rows missing from the source | `WHEN NOT MATCHED BY SOURCE THEN DELETE`; duplicate source keys matching one target row cause an **error** — dedupe first |
+| `CREATE OR REPLACE TABLE ... AS SELECT` | Atomic, **keeps history**, allows schema change. INSERT OVERWRITE needs the same schema; DROP then CTAS loses history |
+| VACUUM vs time travel | VACUUM deletes old files (default **7 days**), so time travel to older versions fails even though the log entry exists |
+| SHALLOW vs DEEP CLONE | Shallow copies **metadata only** and breaks if the source vacuums files it needs; deep copies data |
+| View lifetimes | TEMP VIEW = one notebook session; GLOBAL TEMP VIEW = `global_temp` schema, shared on the cluster; VIEW = permanent |
+| New tables | **Liquid Clustering** (`CLUSTER BY`, keys changeable). Do not combine with partitioning or ZORDER, and you cannot ZORDER by a partition column |
+| Gold object types | Materialized view = precomputed, refreshes, handles late updates; view = recomputed on every query; streaming table = each input once |
+| Join tuning | Small-to-big table: **broadcast** (hint or raise `autoBroadcastJoinThreshold`, default 10 MB) — then re-measure |
+
+#### Lakeflow Spark Declarative Pipelines
+| Trap | What actually happens |
+| --- | --- |
+| `expect` vs `expect_or_drop` vs `expect_or_fail` | expect **keeps** bad rows and records them; expect_or_drop **removes** them; expect_or_fail **stops** the update |
+| DELETE or UPDATE on a streaming source | Fails the stream — `skipChangeCommits` lets it continue, but the delete does **not** flow downstream |
+| Why a pipeline over chained notebooks | The pipeline works out dependencies, handles retries and incremental processing, and has built-in data quality expectations |
+
+#### Lakeflow Jobs
+| Trap | What actually happens |
+| --- | --- |
+| Trigger types | Scheduled (clock), file arrival (files in a storage location), table update (a UC table changes), continuous (always on) |
+| Repair run vs Run now | Repair reruns **only failed and skipped** tasks; Run now repeats everything |
+| Passing values between tasks | `dbutils.jobs.taskValues.set(...)`, read with `{{tasks.TASK.values.KEY}}`; an If/else condition task can branch on it |
+| Run if conditions | **All succeeded** (default), At least one failed, All done, etc. |
+| “Timed Out” status | Raise the task's **timeout threshold**. Scheduled production work belongs on job compute or serverless — not an always-on all-purpose cluster |
+
+#### Governance & Unity Catalog
+| Trap | What actually happens |
+| --- | --- |
+| Reading a table | Needs **USE CATALOG + USE SCHEMA + SELECT** — all three |
+| DROP table behaviors | External: metadata removed, files stay. Managed: **UNDROP within 7 days**. For an external table, recreate over the same files |
+| Row filters & column masks | Attached to the **table**, so they apply on every query path — views can be bypassed by anyone with table access |
+| ABAC policies | Define masking or row filtering **once, by tag**, across many tables |
+| Predictive optimization | Runs on UC **managed tables only** — not external, not Hive metastore |
+
+#### CI/CD, troubleshooting & platform
+| Trap | What actually happens |
+| --- | --- |
+| Declarative Automation Bundle commands | `bundle validate -t X` → `bundle deploy -t X` → `bundle run KEY -t X`. Secrets via variables (`BUNDLE_VAR_...`), never hardcoded |
+| Git folders | Create branches, commit, push and open pull requests through the Git integration |
+| One huge task, big max shuffle read | **Data skew** — salt the key; AQE skew handling covers joins, **not** groupBy |
+| Uniform tasks, heavy spill | Partitions are too large — more shuffle partitions or bigger memory |
+| Classic compute planes | Control plane = web app, notebooks, job scheduler; data plane = cluster VMs and your data in your cloud account |
+| Ad hoc SQL, many users | **Serverless SQL warehouse** with autoscaling |
+"""
+                        ),
                         html.H3("Exam-time strategy", className="tips"),
                         dcc.Markdown(
                             """
