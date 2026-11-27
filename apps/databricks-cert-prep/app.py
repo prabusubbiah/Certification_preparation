@@ -196,6 +196,10 @@ button:hover { transform:translateY(-1px); box-shadow:0 3px 10px rgba(16,24,40,.
 .tab-item { padding:10px 18px; border-radius:9px; font-weight:600; font-size:14.5px; color:#667085; cursor:pointer; transition:all .15s ease; user-select:none; }
 .tab-item:hover { color:#15243b; background:#eef2f8; }
 .tab-item--selected { background:linear-gradient(120deg,#1a73ba,#28344a); color:#fff; box-shadow:0 2px 8px rgba(26,115,186,.35); }
+.subtabbar { display:flex; gap:4px; margin:2px 0 20px; padding:5px; background:#f4f7fb; border:1px solid #e3e8ef; border-radius:11px; flex-wrap:wrap; }
+.subtab-item { padding:7px 14px; border-radius:8px; font-weight:600; font-size:13.5px; color:#667085; cursor:pointer; transition:all .15s ease; user-select:none; }
+.subtab-item:hover { color:#15243b; background:#e8eef6; }
+.subtab-item--selected { background:linear-gradient(120deg,#ff3621,#c9182a); color:#fff; box-shadow:0 2px 8px rgba(255,54,33,.3); }
 
 /* ---------------- exam view polish ---------------- */
 .q-text { font-size:17px; font-weight:600; margin:12px 0 16px; line-height:1.65; }
@@ -3736,6 +3740,17 @@ app.layout = html.Div(
                 html.Div(
                     [
                         html.H2("Exam strategy & common pitfalls", className="tips"),
+                        dcc.Tabs(
+                            id="tips-tabs",
+                            value="strategy",
+                            className="subtabbar",
+                            children=[
+                                dcc.Tab(
+                                    label="🧠 Question strategy",
+                                    value="strategy",
+                                    className="subtab-item",
+                                    selected_className="subtab-item--selected",
+                                    children=[
                         dcc.Markdown(
                             """
 #### 1. Read every question like a checklist — not a textbook
@@ -3790,6 +3805,14 @@ Run this mental template on every question until it becomes automatic.
 P: incremental file ingestion · C: avoid reloads, minimal maintenance · S: file ingestion · F: **Auto Loader**.
 """
                         ),
+                                    ],
+                                ),
+                                dcc.Tab(
+                                    label="🔑 Keywords → features",
+                                    value="keywords",
+                                    className="subtab-item",
+                                    selected_className="subtab-item--selected",
+                                    children=[
                         html.H3("The Keyword → Feature technique", className="tips"),
                         dcc.Markdown(
                             """
@@ -3915,6 +3938,14 @@ A single word can completely change the answer. Mentally underline **must, autom
 | Centrally managed | Unity Catalog or centralized management |
 """
                         ),
+                                    ],
+                                ),
+                                dcc.Tab(
+                                    label="⚠️ Traps & gotchas",
+                                    value="traps",
+                                    className="subtab-item",
+                                    selected_className="subtab-item--selected",
+                                    children=[
                         html.H3("Level-specific traps & quick-reference pitfalls", className="tips"),
                         dcc.Markdown(
                             """
@@ -4029,6 +4060,14 @@ A rapid-fire list of precise behaviors — the details exam questions exploit. S
 | Ad hoc SQL, many users | **Serverless SQL warehouse** with autoscaling |
 """
                         ),
+                                    ],
+                                ),
+                                dcc.Tab(
+                                    label="⏱️ Exam day",
+                                    value="examday",
+                                    className="subtab-item",
+                                    selected_className="subtab-item--selected",
+                                    children=[
                         html.H3("Exam-time strategy", className="tips"),
                         dcc.Markdown(
                             """
@@ -4050,6 +4089,14 @@ A rapid-fire list of precise behaviors — the details exam questions exploit. S
 1. Identify the requirement. 2. Eliminate two options. 3. Choose the best remaining option. 4. Move on.
 """
                         ),
+                                    ],
+                                ),
+                                dcc.Tab(
+                                    label="📚 Study plan",
+                                    value="study",
+                                    className="subtab-item",
+                                    selected_className="subtab-item--selected",
+                                    children=[
                         html.H3("Study smart", className="tips"),
                         dcc.Markdown(
                             """
@@ -4098,6 +4145,10 @@ Progress through the difficulty levels: easy → medium (scenario questions) →
 - [Generative AI Engineer Associate certification page](https://www.databricks.com/learn/certification/generative-ai-engineer-associate)
 - [Databricks documentation](https://docs.databricks.com)
 """
+                        ),
+                                    ],
+                                ),
+                            ],
                         ),
                     ],
                     id="tab-tips",
