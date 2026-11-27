@@ -4274,6 +4274,8 @@ FEATURED_SETS = {
     "Generative AI Engineer — Expected Exam Bank (66)",
     "Data Engineer Professional — Core Bank (37)",
     "Data Engineer Professional — Complex Scenarios (45)",
+    "Data Engineer Associate — Hard Practice Set 2 (30)",
+    "Data Engineer Associate — Hard Practice Exam (45)",
 }
 
 
