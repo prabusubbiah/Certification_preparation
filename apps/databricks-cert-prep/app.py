@@ -4421,17 +4421,18 @@ def exam_minutes(num):
 # the bank (still reachable via "All sets" and kept in the UC table), but is
 # hidden from the dropdown to keep it clean.
 FEATURED_SETS = {
-    "Expected Exam Bank — Complex Scenarios (45)",
-    "Expected Exam Bank — Complex Scenarios 2 (45)",
-    "Expected Exam Bank — Complex Scenarios 3 (45)",
-    "Expected Exam Bank — Complex Scenarios 4 (45)",
-    "Official Practice Exam (Databricks Academy PDF)",
-    "DataBricks-Practice-exam(1).pdf",
-    "Generative AI Engineer — Expected Exam Bank (66)",
-    "Data Engineer Professional — Core Bank (37)",
-    "Data Engineer Professional — Complex Scenarios (45)",
-    "Data Engineer Associate — Hard Practice Set 2 (30)",
-    "Data Engineer Associate — Hard Practice Exam (45)",
+    "Complex 1 (45)",
+    "Complex 2 (45)",
+    "Complex 3 (45)",
+    "Complex 4 (45)",
+    "Official Exam (45)",
+    "Community Exam (45)",
+    "GenAI Bank (66)",
+    "Pro Core (37)",
+    "Pro Complex (45)",
+    "Hard Set (30)",
+    "Hard Exam (45)",
+    "Exam Drill (60)",
 }
 
 
