@@ -4417,20 +4417,13 @@ def exam_minutes(num):
     return max(1, num) * 2
 
 
-# Sets shown in the Practice-exam "Set" dropdown. Every other set stays in
-# the bank (still reachable via "All sets" and kept in the UC table), but is
-# hidden from the dropdown to keep it clean.
+# Sets shown in the Practice-exam "Set" dropdown — hard, real-exam-level
+# material only (full 45-question exam sets plus the other complex banks).
+# Easy and predictable sets stay in the UC bank for reference, but never
+# feed practice exams: the exam pool is filtered to FEATURED_SETS.
 FEATURED_SETS = {
-    "Core Easy (96)",
     "Official Exam (45)",
     "Community Exam (45)",
-    "Practice Easy (35)",
-    "Core Medium (239)",
-    "Practice Medium (49)",
-    "GenAI Easy (15)",
-    "GenAI Medium (39)",
-    "Pro Easy (5)",
-    "Pro Medium (46)",
     "Core Complex (108)",
     "Complex 1 (45)",
     "Complex 2 (45)",
@@ -4462,7 +4455,9 @@ def exam_filter_options(level, domain, difficulty, qset):
     doms = ["All domains"] + SECTIONS.get(level or "associate", [])
     domain = domain if domain in doms else "All domains"
     pool = [q for q in get_bank()["questions"] if q["cert_level"] == level]
-    # only featured sets that actually have questions for the chosen level,
+    # practice draws only from featured (hard, real-exam-level) sets
+    pool = [q for q in pool if q["source"] in FEATURED_SETS]
+    # featured sets that actually have questions for the chosen level,
     # grouped by difficulty tier: easy -> medium -> complex, then by name
     # (every set is tier-pure: one difficulty per set)
     tier_rank = {"easy": 0, "medium": 1, "complex": 2}
@@ -4685,6 +4680,8 @@ def exam_mutate(
         pool = [
             q for q in get_bank()["questions"] if q["cert_level"] == level
         ]
+        # practice draws only from featured (hard, real-exam-level) sets
+        pool = [q for q in pool if q["source"] in FEATURED_SETS]
         if domain and domain != "All domains":
             pool = [q for q in pool if q["domain"] == domain]
         if qset not in (None, "", "All sets"):
