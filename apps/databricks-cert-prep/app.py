@@ -4433,6 +4433,7 @@ FEATURED_SETS = {
     "Hard Set (30)",
     "Hard Exam (45)",
     "Exam Drill (60)",
+    "Practice Exam (84)",
 }
 
 
