@@ -4421,19 +4421,26 @@ def exam_minutes(num):
 # the bank (still reachable via "All sets" and kept in the UC table), but is
 # hidden from the dropdown to keep it clean.
 FEATURED_SETS = {
+    "Core Easy (96)",
+    "Official Exam (45)",
+    "Community Exam (45)",
+    "Practice Easy (35)",
+    "Core Medium (239)",
+    "Practice Medium (49)",
+    "GenAI Easy (15)",
+    "GenAI Medium (39)",
+    "Pro Easy (5)",
+    "Pro Medium (46)",
+    "Core Complex (108)",
     "Complex 1 (45)",
     "Complex 2 (45)",
     "Complex 3 (45)",
     "Complex 4 (45)",
-    "Official Exam (45)",
-    "Community Exam (45)",
-    "GenAI Bank (66)",
-    "Pro Core (37)",
-    "Pro Complex (45)",
     "Hard Set (30)",
     "Hard Exam (45)",
     "Exam Drill (60)",
-    "Practice Exam (84)",
+    "GenAI Complex (12)",
+    "Pro Complex (31)",
 }
 
 
@@ -4455,11 +4462,16 @@ def exam_filter_options(level, domain, difficulty, qset):
     doms = ["All domains"] + SECTIONS.get(level or "associate", [])
     domain = domain if domain in doms else "All domains"
     pool = [q for q in get_bank()["questions"] if q["cert_level"] == level]
-    # only featured sets that actually have questions for the chosen level
+    # only featured sets that actually have questions for the chosen level,
+    # grouped by difficulty tier: easy -> medium -> complex, then by name
+    # (every set is tier-pure: one difficulty per set)
+    tier_rank = {"easy": 0, "medium": 1, "complex": 2}
+    set_tier = {}
+    for q in pool:
+        if q["source"] in FEATURED_SETS:
+            set_tier.setdefault(q["source"], q["difficulty"])
     sets = ["All sets"] + sorted(
-        s
-        for s in {q["source"] for q in pool if q["source"]}
-        if s in FEATURED_SETS
+        set_tier, key=lambda s: (tier_rank.get(set_tier[s], 1), s)
     )
     qset = qset if qset in sets else "All sets"
     if qset != "All sets":
