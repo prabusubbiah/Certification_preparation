@@ -152,7 +152,11 @@ button:hover { filter:brightness(.96); }
 .q-text { font-size:17px; font-weight:600; margin:10px 0 14px; }
 .nav-btn { min-width:38px; padding:6px 8px; background:#eef1f5; }
 .nav-btn.answered { background:#1a73ba; color:#fff; }
+.nav-btn.correct { background:#e6f4ea; color:#1e7e34; }
+.nav-btn.wrong { background:#fee4e2; color:#b42318; }
 .nav-btn.current { outline:3px solid #ffb5aa; }
+.opt-correct { color:#1e7e34; font-weight:600; }
+.opt-wrong { color:#b42318; font-weight:600; }
 .q-grid { display:flex; flex-wrap:wrap; gap:6px; margin-top:14px; }
 table.domains { border-collapse:collapse; width:100%; margin-top:8px; }
 table.domains th, table.domains td { padding:8px 10px; text-align:left; border-bottom:1px solid #e3e8ef; font-size:14px; }
@@ -205,7 +209,11 @@ button:hover { transform:translateY(-1px); box-shadow:0 3px 10px rgba(16,24,40,.
 .q-text { font-size:17px; font-weight:600; margin:12px 0 16px; line-height:1.65; }
 .nav-btn { min-width:38px; padding:6px 8px; background:#eef1f5; border-radius:9px; font-size:13px; }
 .nav-btn.answered { background:#1a73ba; color:#fff; }
+.nav-btn.correct { background:#e6f4ea; color:#1e7e34; }
+.nav-btn.wrong { background:#fee4e2; color:#b42318; }
 .nav-btn.current { outline:3px solid #ffb5aa; box-shadow:0 0 0 4px rgba(255,181,170,.35); }
+.opt-correct { color:#1e7e34; font-weight:600; }
+.opt-wrong { color:#b42318; font-weight:600; }
 .timer { font-size:26px; font-weight:700; font-variant-numeric:tabular-nums; letter-spacing:.5px; }
 .timer.paused { opacity:.6; }
 table.domains th { background:#eef2f8; font-weight:700; }
@@ -3701,6 +3709,11 @@ app.layout = html.Div(
                                             title="Pause the exam and the timer (click again to resume)",
                                         ),
                                         html.Button(
+                                            "🚩 Flag",
+                                            id="exam-flag",
+                                            title="Flag this question to revisit it later (click again to unflag)",
+                                        ),
+                                        html.Button(
                                             "Submit exam",
                                             id="exam-submit",
                                             className="btn-accent",
@@ -4653,6 +4666,7 @@ def toggle_exam_views(mode):
     Input("exam-prev", "n_clicks"),
     Input("exam-next", "n_clicks"),
     Input("exam-pause", "n_clicks"),
+    Input("exam-flag", "n_clicks"),
     Input({"type": "exam-nav", "index": ALL}, "n_clicks"),
     Input("exam-retake", "n_clicks"),
     Input("exam-submit", "n_clicks"),
@@ -4666,7 +4680,7 @@ def toggle_exam_views(mode):
     State("exam-result", "data"),
 )
 def exam_mutate(
-    n_start, opt_value, _prev, _next, _pause, _nav, _retake, _submit,
+    n_start, opt_value, _prev, _next, _pause, _flag, _nav, _retake, _submit,
     level, num, mins, domain, difficulty, qset, state, result,
 ):
     tid = ctx.triggered_id
@@ -4745,6 +4759,17 @@ def exam_mutate(
             s["remaining"] = state["deadline"] - now
         return s, no_update, no_update, no_update
 
+    if tid == "exam-flag":  # toggle the revisit-later flag on this question
+        s = dict(state)
+        flags = set(state.get("flags", []))
+        qid = str(state["qids"][state["idx"]])
+        if qid in flags:
+            flags.discard(qid)
+        else:
+            flags.add(qid)
+        s["flags"] = sorted(flags)
+        return s, no_update, no_update, no_update
+
     if tid_dict.get("type") == "exam-nav":
         s = dict(state)
         s["idx"] = int(tid_dict["index"])
@@ -4768,6 +4793,19 @@ def pause_label(state):
     if state and not state.get("submitted"):
         return "▶ Resume" if state.get("paused") else "⏸ Pause"
     return "⏸ Pause"
+
+
+@app.callback(
+    Output("exam-flag", "children"),
+    Input("exam-state", "data"),
+)
+def flag_label(state):
+    """Flag button reflects whether the current question is flagged."""
+    if state and not state.get("submitted") and state.get("qids"):
+        qid = str(state["qids"][state["idx"]])
+        flagged = qid in set(state.get("flags", []))
+        return "🚩 Flagged" if flagged else "🚩 Flag"
+    return "🚩 Flag"
 
 
 @app.callback(
@@ -4803,6 +4841,14 @@ def tick_timer(_n, state, result):
         return "00:00", "timer low", s, res, "results", True
     cls = "timer" + (" low" if remaining < 60 else "")
     return fmt_secs(remaining), cls, no_update, no_update, no_update, no_update
+
+
+def _answer_class(state, by_id, qid):
+    """Nav-button class by answer status: green = correct, red = wrong."""
+    a = state["answers"].get(str(qid))
+    if a is None:
+        return ""
+    return " correct" if a == by_id[qid]["correct_index"] else " wrong"
 
 
 @app.callback(
@@ -4847,6 +4893,16 @@ def render_question(state):
     by_id = {q["id"]: q for q in get_bank()["questions"]}
     qids, idx = state["qids"], state["idx"]
     q = by_id[qids[idx]]
+    ans = state["answers"].get(str(q["id"]))
+    # instant practice feedback once the current question is answered
+    status_badge = None
+    if ans is not None:
+        ok = ans == q["correct_index"]
+        status_badge = html.Span(
+            "✓ Correct" if ok else "✗ Wrong",
+            className=("badge pass" if ok else "badge fail"),
+            style={"fontSize": "12px", "padding": "3px 12px"},
+        )
     qnum = html.Div(
         [
             html.Span(f"Question {idx + 1} of {len(qids)}", className="q-count"),
@@ -4855,18 +4911,34 @@ def render_question(state):
                 f" · {q['difficulty']}",
                 style={"color": "#667085", "fontSize": "13px", "marginLeft": "6px"},
             ),
+            *([status_badge] if status_badge else []),
         ]
     )
-    opts = [{"label": o, "value": i} for i, o in enumerate(q["options"])]
-    value = state["answers"].get(str(q["id"]))
+    opts = []
+    for i, o in enumerate(q["options"]):
+        if ans is not None and i == q["correct_index"]:
+            opts.append(
+                {"label": html.Span([o, "   ✓ correct"], className="opt-correct"), "value": i}
+            )
+        elif ans is not None and i == ans:
+            opts.append(
+                {"label": html.Span([o, "   ✗ your pick"], className="opt-wrong"), "value": i}
+            )
+        else:
+            opts.append({"label": o, "value": i})
+    value = ans
     lvl_label = next((l['label'] for l in LEVELS if l['value'] == state['level']), '')
-    progress = f"{len(state['answers'])}/{len(qids)} answered · {lvl_label}"
+    flags = set(state.get("flags", []))
+    progress = (
+        f"{len(state['answers'])}/{len(qids)} answered · {lvl_label}"
+        + (f" · {len(flags)} flagged" if flags else "")
+    )
     nav = [
         html.Button(
-            str(i + 1),
+            (str(i + 1) + "🚩") if str(qid) in flags else str(i + 1),
             id={"type": "exam-nav", "index": i},
             className="nav-btn"
-            + (" answered" if str(qid) in state["answers"] else "")
+            + _answer_class(state, by_id, qid)
             + (" current" if i == idx else ""),
             disabled=paused,
         )
